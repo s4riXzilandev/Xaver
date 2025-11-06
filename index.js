@@ -1,6 +1,6 @@
 // =========================
-// Xaver v4.0 — Professional Edition 🗡️✨
-// Enhanced logging, cleaner structure, better error handling
+// Xaver v4.5 — Professional Edition 🗡️✨
+// NEW: Verifier System, Enhanced Welcomer, Role Logs
 // =========================
 
 import 'dotenv/config';
@@ -25,7 +25,9 @@ const CONFIG = {
   ownerId: process.env.OWNER_ID || null,
   prefix: process.env.PREFIX || 'x!',
   logChannelId: process.env.LOG_CHANNEL_ID || '1435639902233559111',
-  welcomeChannelId: process.env.WELCOME_CHANNEL_ID || null,
+  welcomeChannelId: process.env.WELCOME_CHANNEL_ID || '1435631217918607390',
+  verifyChannelId: process.env.VERIFY_CHANNEL_ID || null,
+  verifyRoleId: process.env.VERIFY_ROLE_ID || null,
   supportRoleId: process.env.SUPPORT_ROLE_ID || null,
   ticketCategoryId: process.env.TICKET_CATEGORY_ID || null,
   healthKey: process.env.HEALTH_KEY || null,
@@ -47,7 +49,7 @@ app.use(express.json());
 app.get('/', (_req, res) => {
   res.json({
     status: 'online',
-    bot: 'Xaver v4.0',
+    bot: 'Xaver v4.5',
     uptime: process.uptime(),
     message: '🟣 Xaver is elegantly operational.'
   });
@@ -87,31 +89,22 @@ const client = new Client({
 });
 
 // ==================== IN-MEMORY STORES ====================
-const userStats = new Map(); // `${guildId}:${userId}` -> {xp, level, lastSeen, username, messageCount}
-const cooldowns = new Map();  // cooldown tracking
-const activeTickets = new Map(); // track open tickets
+const userStats = new Map();
+const cooldowns = new Map();
+const activeTickets = new Map();
 
 // ==================== UTILITY FUNCTIONS ====================
 const Utils = {
-  // Clean padding for embeds
   pad: (str) => `\u200B${str}`,
-
-  // XP calculation
   xpForLevel: (level) => 5 * level * level + 20 * level + 10,
-
-  // User key generator
   userKey: (guildId, userId) => `${guildId}:${userId}`,
-
-  // Unix timestamp
   timestamp: (date = new Date()) => Math.floor(date.getTime() / 1000),
 
-  // Text clipper
   clip: (text, maxLength = 1000) => {
     if (!text) return '*(no content)*';
     return text.length > maxLength ? text.slice(0, maxLength - 3) + '...' : text;
   },
 
-  // Create embed
   embed: ({ 
     title, 
     description, 
@@ -135,7 +128,7 @@ const Utils = {
 
     if (footer && client.user) {
       embed.setFooter({ 
-        text: 'Xaver v4.0', 
+        text: 'Xaver v4.5', 
         iconURL: client.user.displayAvatarURL() 
       });
     }
@@ -143,7 +136,6 @@ const Utils = {
     return embed;
   },
 
-  // Send to log channel
   sendLog: async (guild, embed) => {
     if (!CONFIG.logChannelId) return;
     try {
@@ -156,7 +148,6 @@ const Utils = {
     }
   },
 
-  // Check if user has permission
   hasPermission: (member, permission) => {
     return member.permissions.has(permission) || 
            (CONFIG.ownerId && member.id === CONFIG.ownerId);
@@ -248,6 +239,7 @@ const slashCommands = [
   {
     name: 'ticket',
     description: 'Manage support tickets',
+    default_member_permissions: String(PermissionFlagsBits.ManageGuild),
     options: [
       {
         type: 1,
@@ -263,7 +255,27 @@ const slashCommands = [
   },
   {
     name: 'stats',
-    description: 'View bot statistics and information'
+    description: 'View bot statistics and information',
+    default_member_permissions: String(PermissionFlagsBits.ManageGuild)
+  },
+  {
+    name: 'verify',
+    description: 'Setup verification system (Admin only)',
+    default_member_permissions: String(PermissionFlagsBits.ManageGuild),
+    options: [
+      {
+        name: 'channel',
+        description: 'Channel for verification message',
+        type: 7,
+        required: false
+      },
+      {
+        name: 'role',
+        description: 'Role to give after verification',
+        type: 8,
+        required: true
+      }
+    ]
   }
 ];
 
@@ -275,7 +287,6 @@ const XPSystem = {
     const now = Date.now();
     const lastXP = cooldowns.get(cooldownKey) || 0;
 
-    // 10 second cooldown
     if (now - lastXP < 10000) return null;
 
     const stats = userStats.get(key) || {
@@ -290,13 +301,11 @@ const XPSystem = {
     stats.lastSeen = new Date();
     stats.messageCount++;
 
-    // Give 10-15 XP per message
     const xpGained = 10 + Math.floor(Math.random() * 6);
     stats.xp += xpGained;
 
     cooldowns.set(cooldownKey, now);
 
-    // Check for level up
     let leveledUp = false;
     while (stats.xp >= Utils.xpForLevel(stats.level)) {
       stats.xp -= Utils.xpForLevel(stats.level);
@@ -313,19 +322,17 @@ const XPSystem = {
 // ==================== EVENT: READY ====================
 client.once('ready', async () => {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`✅ Xaver v4.0 successfully logged in!`);
+  console.log(`✅ Xaver v4.5 successfully logged in!`);
   console.log(`👤 Username: ${client.user.tag}`);
   console.log(`🆔 User ID: ${client.user.id}`);
   console.log(`🏰 Servers: ${client.guilds.cache.size}`);
   console.log(`${'='.repeat(50)}\n`);
 
-  // Set presence
   client.user.setPresence({
     activities: [{ name: `over ${client.guilds.cache.size} servers | /help` }],
     status: 'online'
   });
 
-  // Register slash commands
   const guilds = await client.guilds.fetch();
   let successCount = 0;
 
@@ -411,34 +418,46 @@ client.on('messageUpdate', async (oldMessage, newMessage) => {
 
 // ==================== EVENT: MEMBER JOIN ====================
 client.on('guildMemberAdd', async (member) => {
-  // Welcome message
+  // Enhanced Welcome message
   const welcomeChannel = member.guild.channels.cache.get(CONFIG.welcomeChannelId) || 
                          member.guild.systemChannel;
 
   if (welcomeChannel?.isTextBased()) {
+    const accountAge = Math.floor((Date.now() - member.user.createdAt.getTime()) / (1000 * 60 * 60 * 24));
+
     const welcomeEmbed = Utils.embed({
-      title: '👋 Welcome!',
-      description: `Welcome to the server, **${member.user.username}**!\nYou are member #${member.guild.memberCount}`,
+      title: '🎉 Welcome to the Server!',
+      description: `Hey **${member.user.username}**, welcome to **${member.guild.name}**!\n\nYou are member **#${member.guild.memberCount}**`,
       color: CONFIG.colors.success,
-      thumbnail: member.user.displayAvatarURL(),
+      thumbnail: member.user.displayAvatarURL({ size: 256 }),
       fields: [
-        { name: '📅 Account Created', value: `<t:${Utils.timestamp(member.user.createdAt)}:R>`, inline: true }
-      ]
+        { name: '📅 Account Created', value: `<t:${Utils.timestamp(member.user.createdAt)}:R> (${accountAge} days old)`, inline: false },
+        { name: '📋 User ID', value: member.id, inline: true }
+      ],
+      image: member.guild.bannerURL({ size: 1024 })
     });
 
-    welcomeChannel.send({ embeds: [welcomeEmbed] }).catch(() => {});
+    welcomeChannel.send({ 
+      content: `👋 Welcome ${member}!`,
+      embeds: [welcomeEmbed] 
+    }).catch(() => {});
   }
 
-  // Log
+  // Log with more details
+  const accountAge = Math.floor((Date.now() - member.user.createdAt.getTime()) / (1000 * 60 * 60 * 24));
+  const isNewAccount = accountAge < 7;
+
   const logEmbed = Utils.embed({
     title: '➕ Member Joined',
-    color: CONFIG.colors.success,
+    color: isNewAccount ? CONFIG.colors.warning : CONFIG.colors.success,
     thumbnail: member.user.displayAvatarURL(),
     fields: [
       { name: '👤 User', value: `${member.user.tag}`, inline: true },
       { name: '🆔 ID', value: member.id, inline: true },
-      { name: '📅 Account Age', value: `<t:${Utils.timestamp(member.user.createdAt)}:R>`, inline: true },
-      { name: '👥 Member Count', value: `${member.guild.memberCount}`, inline: true }
+      { name: '📅 Account Age', value: `${accountAge} days`, inline: true },
+      { name: '📅 Created', value: `<t:${Utils.timestamp(member.user.createdAt)}:R>`, inline: true },
+      { name: '👥 Member Count', value: `${member.guild.memberCount}`, inline: true },
+      { name: '⚠️ New Account?', value: isNewAccount ? 'Yes - Suspicious!' : 'No', inline: true }
     ]
   });
 
@@ -455,7 +474,8 @@ client.on('guildMemberRemove', async (member) => {
       { name: '👤 User', value: `${member.user?.tag || 'Unknown'}`, inline: true },
       { name: '🆔 ID', value: member.id, inline: true },
       { name: '📅 Joined Server', value: member.joinedAt ? `<t:${Utils.timestamp(member.joinedAt)}:R>` : 'Unknown', inline: true },
-      { name: '👥 Member Count', value: `${member.guild.memberCount}`, inline: true }
+      { name: '👥 Member Count', value: `${member.guild.memberCount}`, inline: true },
+      { name: '🎭 Roles', value: member.roles.cache.size > 1 ? member.roles.cache.filter(r => r.id !== member.guild.id).map(r => r.name).join(', ') : 'None', inline: false }
     ]
   });
 
@@ -472,7 +492,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
   let embed = null;
 
-  // Joined VC
   if (!oldState.channelId && newState.channelId) {
     embed = Utils.embed({
       title: '🎧 Voice Channel Joined',
@@ -484,7 +503,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       ]
     });
   }
-  // Left VC
   else if (oldState.channelId && !newState.channelId) {
     embed = Utils.embed({
       title: '🎧 Voice Channel Left',
@@ -496,7 +514,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
       ]
     });
   }
-  // Switched VC
   else if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
     embed = Utils.embed({
       title: '🎧 Voice Channel Switched',
@@ -512,14 +529,234 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   if (embed) Utils.sendLog(guild, embed);
 });
 
-// ==================== EVENT: INTERACTION CREATE ====================
+// ==================== EVENT: ROLE CREATE ====================
+client.on('roleCreate', async (role) => {
+  const embed = Utils.embed({
+    title: '🎭 Role Created',
+    color: CONFIG.colors.success,
+    fields: [
+      { name: '🏷️ Name', value: role.name, inline: true },
+      { name: '🆔 ID', value: role.id, inline: true },
+      { name: '🎨 Color', value: role.hexColor, inline: true },
+      { name: '📍 Position', value: `${role.position}`, inline: true },
+      { name: '🔒 Hoisted', value: role.hoist ? 'Yes' : 'No', inline: true },
+      { name: '📌 Mentionable', value: role.mentionable ? 'Yes' : 'No', inline: true }
+    ]
+  });
+
+  Utils.sendLog(role.guild, embed);
+});
+
+// ==================== EVENT: ROLE DELETE ====================
+client.on('roleDelete', async (role) => {
+  const embed = Utils.embed({
+    title: '🗑️ Role Deleted',
+    color: CONFIG.colors.error,
+    fields: [
+      { name: '🏷️ Name', value: role.name, inline: true },
+      { name: '🆔 ID', value: role.id, inline: true },
+      { name: '🎨 Color', value: role.hexColor, inline: true },
+      { name: '👥 Members Had', value: `${role.members.size}`, inline: true }
+    ]
+  });
+
+  Utils.sendLog(role.guild, embed);
+});
+
+// ==================== EVENT: ROLE UPDATE ====================
+client.on('roleUpdate', async (oldRole, newRole) => {
+  const changes = [];
+
+  if (oldRole.name !== newRole.name) {
+    changes.push({ name: '🏷️ Name Changed', value: `${oldRole.name} → ${newRole.name}`, inline: false });
+  }
+
+  if (oldRole.hexColor !== newRole.hexColor) {
+    changes.push({ name: '🎨 Color Changed', value: `${oldRole.hexColor} → ${newRole.hexColor}`, inline: true });
+  }
+
+  if (oldRole.hoist !== newRole.hoist) {
+    changes.push({ name: '🔒 Hoisted', value: `${oldRole.hoist ? 'Yes' : 'No'} → ${newRole.hoist ? 'Yes' : 'No'}`, inline: true });
+  }
+
+  if (oldRole.mentionable !== newRole.mentionable) {
+    changes.push({ name: '📌 Mentionable', value: `${oldRole.mentionable ? 'Yes' : 'No'} → ${newRole.mentionable ? 'Yes' : 'No'}`, inline: true });
+  }
+
+  if (oldRole.position !== newRole.position) {
+    changes.push({ name: '📍 Position', value: `${oldRole.position} → ${newRole.position}`, inline: true });
+  }
+
+  // Check permission changes
+  const addedPerms = newRole.permissions.toArray().filter(p => !oldRole.permissions.has(p));
+  const removedPerms = oldRole.permissions.toArray().filter(p => !newRole.permissions.has(p));
+
+  if (addedPerms.length > 0) {
+    changes.push({ name: '➕ Permissions Added', value: addedPerms.join(', '), inline: false });
+  }
+
+  if (removedPerms.length > 0) {
+    changes.push({ name: '➖ Permissions Removed', value: removedPerms.join(', '), inline: false });
+  }
+
+  if (changes.length === 0) return;
+
+  const embed = Utils.embed({
+    title: '🎭 Role Updated',
+    color: CONFIG.colors.info,
+    description: `Role: ${newRole}`,
+    fields: changes
+  });
+
+  Utils.sendLog(newRole.guild, embed);
+});
+
+// ==================== EVENT: MEMBER UPDATE (Roles & Nickname) ====================
+client.on('guildMemberUpdate', async (oldMember, newMember) => {
+  const oldRoles = oldMember.roles.cache;
+  const newRoles = newMember.roles.cache;
+
+  const addedRoles = newRoles.filter(role => !oldRoles.has(role.id));
+  const removedRoles = oldRoles.filter(role => !newRoles.has(role.id));
+
+  if (addedRoles.size > 0 || removedRoles.size > 0) {
+    const fields = [
+      { name: '👤 User', value: `${newMember.user.tag} (${newMember.id})`, inline: false }
+    ];
+
+    if (addedRoles.size > 0) {
+      fields.push({
+        name: '➕ Roles Added',
+        value: addedRoles.map(r => `${r}`).join(', '),
+        inline: false
+      });
+    }
+
+    if (removedRoles.size > 0) {
+      fields.push({
+        name: '➖ Roles Removed',
+        value: removedRoles.map(r => `${r.name}`).join(', '),
+        inline: false
+      });
+    }
+
+    const embed = Utils.embed({
+      title: '🎭 Member Roles Updated',
+      color: CONFIG.colors.info,
+      thumbnail: newMember.user.displayAvatarURL(),
+      fields
+    });
+
+    Utils.sendLog(newMember.guild, embed);
+  }
+
+  // Nickname changes
+  if (oldMember.nickname !== newMember.nickname) {
+    const embed = Utils.embed({
+      title: '✏️ Nickname Changed',
+      color: CONFIG.colors.info,
+      thumbnail: newMember.user.displayAvatarURL(),
+      fields: [
+        { name: '👤 User', value: `${newMember.user.tag}`, inline: true },
+        { name: '📝 Old Nickname', value: oldMember.nickname || '*None*', inline: true },
+        { name: '📝 New Nickname', value: newMember.nickname || '*None*', inline: true }
+      ]
+    });
+
+    Utils.sendLog(newMember.guild, embed);
+  }
+});
+
+// ==================== EVENT: CHANNEL CREATE ====================
+client.on('channelCreate', async (channel) => {
+  if (!channel.guild) return;
+
+  const typeMap = {
+    [ChannelType.GuildText]: 'Text Channel',
+    [ChannelType.GuildVoice]: 'Voice Channel',
+    [ChannelType.GuildCategory]: 'Category',
+    [ChannelType.GuildAnnouncement]: 'Announcement Channel',
+    [ChannelType.GuildStageVoice]: 'Stage Channel',
+    [ChannelType.GuildForum]: 'Forum Channel'
+  };
+
+  const embed = Utils.embed({
+    title: '➕ Channel Created',
+    color: CONFIG.colors.success,
+    fields: [
+      { name: '📺 Channel', value: `${channel}`, inline: true },
+      { name: '🏷️ Name', value: channel.name, inline: true },
+      { name: '📋 Type', value: typeMap[channel.type] || 'Unknown', inline: true },
+      { name: '🆔 ID', value: channel.id, inline: true }
+    ]
+  });
+
+  Utils.sendLog(channel.guild, embed);
+});
+
+// ==================== EVENT: CHANNEL DELETE ====================
+client.on('channelDelete', async (channel) => {
+  if (!channel.guild) return;
+
+  const typeMap = {
+    [ChannelType.GuildText]: 'Text Channel',
+    [ChannelType.GuildVoice]: 'Voice Channel',
+    [ChannelType.GuildCategory]: 'Category',
+    [ChannelType.GuildAnnouncement]: 'Announcement Channel',
+    [ChannelType.GuildStageVoice]: 'Stage Channel',
+    [ChannelType.GuildForum]: 'Forum Channel'
+  };
+
+  const embed = Utils.embed({
+    title: '🗑️ Channel Deleted',
+    color: CONFIG.colors.error,
+    fields: [
+      { name: '🏷️ Name', value: channel.name, inline: true },
+      { name: '📋 Type', value: typeMap[channel.type] || 'Unknown', inline: true },
+      { name: '🆔 ID', value: channel.id, inline: true }
+    ]
+  });
+
+  Utils.sendLog(channel.guild, embed);
+});
+
+// ==================== EVENT: BAN ADD ====================
+client.on('guildBanAdd', async (ban) => {
+  const embed = Utils.embed({
+    title: '🔨 Member Banned',
+    color: CONFIG.colors.error,
+    thumbnail: ban.user.displayAvatarURL(),
+    fields: [
+      { name: '👤 User', value: `${ban.user.tag}`, inline: true },
+      { name: '🆔 ID', value: ban.user.id, inline: true },
+      { name: '📋 Reason', value: ban.reason || 'No reason provided', inline: false }
+    ]
+  });
+
+  Utils.sendLog(ban.guild, embed);
+});
+
+// ==================== EVENT: BAN REMOVE ====================
+client.on('guildBanRemove', async (ban) => {
+  const embed = Utils.embed({
+    title: '🔓 Member Unbanned',
+    color: CONFIG.colors.success,
+    thumbnail: ban.user.displayAvatarURL(),
+    fields: [
+      { name: '👤 User', value: `${ban.user.tag}`, inline: true },
+      { name: '🆔 ID', value: ban.user.id, inline: true }
+    ]
+  });
+
+  Utils.sendLog(ban.guild, embed);
+});
+
+// ==================== INTERACTION HANDLER ====================
 client.on('interactionCreate', async (interaction) => {
-  // Handle buttons
   if (interaction.isButton()) {
     return handleButton(interaction);
   }
 
-  // Handle slash commands
   if (interaction.isChatInputCommand()) {
     return handleSlashCommand(interaction);
   }
@@ -528,6 +765,59 @@ client.on('interactionCreate', async (interaction) => {
 // ==================== BUTTON HANDLER ====================
 async function handleButton(interaction) {
   const [scope, action, extra] = interaction.customId.split(':');
+
+  // Verification button
+  if (scope === 'verify' && action === 'click') {
+    const roleId = extra;
+    const role = interaction.guild.roles.cache.get(roleId);
+
+    if (!role) {
+      return interaction.reply({
+        ephemeral: true,
+        content: Utils.pad('❌ Verification role not found!')
+      });
+    }
+
+    if (interaction.member.roles.cache.has(roleId)) {
+      return interaction.reply({
+        ephemeral: true,
+        content: Utils.pad('✅ You are already verified!')
+      });
+    }
+
+    try {
+      await interaction.member.roles.add(role);
+
+      const embed = Utils.embed({
+        title: '✅ Verification Successful!',
+        description: `You have been verified and received the ${role} role!\n\nWelcome to **${interaction.guild.name}**!`,
+        color: CONFIG.colors.success,
+        thumbnail: interaction.user.displayAvatarURL()
+      });
+
+      await interaction.reply({ ephemeral: true, embeds: [embed] });
+
+      // Log
+      Utils.sendLog(interaction.guild, Utils.embed({
+        title: '✅ Member Verified',
+        color: CONFIG.colors.success,
+        fields: [
+          { name: '👤 User', value: `${interaction.user.tag}`, inline: true },
+          { name: '🎭 Role', value: `${role}`, inline: true },
+          { name: '🕒 Time', value: `<t:${Utils.timestamp()}:R>`, inline: true }
+        ]
+      }));
+
+    } catch (error) {
+      console.error('Verification error:', error);
+      return interaction.reply({
+        ephemeral: true,
+        content: Utils.pad('❌ Failed to verify. Please contact an administrator.')
+      });
+    }
+
+    return;
+  }
 
   // Announcement buttons
   if (scope === 'announce') {
@@ -617,6 +907,9 @@ async function handleSlashCommand(interaction) {
       case 'stats':
         await handleStatsCommand(interaction);
         break;
+      case 'verify':
+        await handleVerifyCommand(interaction);
+        break;
       default:
         await interaction.reply({
           ephemeral: true,
@@ -656,6 +949,11 @@ async function handleHelpCommand(interaction) {
         inline: false
       },
       {
+        name: '✅ Verification System',
+        value: '`/verify` — Setup verification system (Admin)',
+        inline: false
+      },
+      {
         name: '📣 Announcements',
         value: '`/announce` — Create professional announcements\n`/say` — Send messages as the bot',
         inline: false
@@ -670,6 +968,64 @@ async function handleHelpCommand(interaction) {
   });
 
   await interaction.reply({ ephemeral: true, embeds: [embed] });
+}
+
+// ==================== COMMAND: /verify ====================
+async function handleVerifyCommand(interaction) {
+  if (!Utils.hasPermission(interaction.member, PermissionFlagsBits.ManageGuild)) {
+    return interaction.reply({
+      ephemeral: true,
+      content: Utils.pad('❌ Insufficient permissions.')
+    });
+  }
+
+  const role = interaction.options.getRole('role', true);
+  const channel = interaction.options.getChannel('channel') || interaction.channel;
+
+  if (!channel.isTextBased()) {
+    return interaction.reply({
+      ephemeral: true,
+      content: Utils.pad('❌ Invalid channel type.')
+    });
+  }
+
+  const verifyButton = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`verify:click:${role.id}`)
+      .setLabel('Verify')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('✅')
+  );
+
+  const embed = Utils.embed({
+    title: '✅ Server Verification',
+    description: `Welcome to **${interaction.guild.name}**!\n\nTo gain access to the server, please click the button below to verify yourself.\n\nYou will receive the ${role} role.`,
+    color: CONFIG.colors.brand,
+    thumbnail: interaction.guild.iconURL({ size: 256 }),
+    fields: [
+      { name: '📋 Instructions', value: '1. Read the server rules\n2. Click the Verify button\n3. Enjoy the server!', inline: false }
+    ]
+  });
+
+  await channel.send({
+    embeds: [embed],
+    components: [verifyButton]
+  });
+
+  await interaction.reply({
+    ephemeral: true,
+    content: Utils.pad(`✅ Verification system setup in ${channel}!`)
+  });
+
+  Utils.sendLog(interaction.guild, Utils.embed({
+    title: '✅ Verification System Setup',
+    color: CONFIG.colors.success,
+    fields: [
+      { name: '👤 Setup By', value: interaction.user.tag, inline: true },
+      { name: '📍 Channel', value: `${channel}`, inline: true },
+      { name: '🎭 Role', value: `${role}`, inline: true }
+    ]
+  }));
 }
 
 // ==================== COMMAND: /level ====================
@@ -848,10 +1204,17 @@ async function handleAnnounceCommand(interaction) {
 
 // ==================== COMMAND: /ticket ====================
 async function handleTicketCommand(interaction) {
+  // Admin check
+  if (!Utils.hasPermission(interaction.member, PermissionFlagsBits.ManageGuild)) {
+    return interaction.reply({
+      ephemeral: true,
+      content: Utils.pad('❌ Only administrators can use this command.')
+    });
+  }
+
   const subcommand = interaction.options.getSubcommand();
 
   if (subcommand === 'create') {
-    // Check if user already has a ticket
     const existingTicket = activeTickets.get(interaction.user.id);
     if (existingTicket) {
       return interaction.reply({
@@ -860,7 +1223,6 @@ async function handleTicketCommand(interaction) {
       });
     }
 
-    // Find or create ticket category
     let categoryId = CONFIG.ticketCategoryId;
     if (!categoryId) {
       const existingCategory = interaction.guild.channels.cache.find(
@@ -879,7 +1241,6 @@ async function handleTicketCommand(interaction) {
       }
     }
 
-    // Create ticket channel
     const ticketChannel = await interaction.guild.channels.create({
       name: `ticket-${interaction.user.username}`.toLowerCase().slice(0, 100),
       type: ChannelType.GuildText,
@@ -909,10 +1270,8 @@ async function handleTicketCommand(interaction) {
       ]
     });
 
-    // Track active ticket
     activeTickets.set(interaction.user.id, ticketChannel.id);
 
-    // Create close button
     const closeButton = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`ticket:close:${interaction.user.id}`)
@@ -921,7 +1280,6 @@ async function handleTicketCommand(interaction) {
         .setEmoji('🗑️')
     );
 
-    // Send ticket message
     const ticketEmbed = Utils.embed({
       title: '🎟️ Support Ticket',
       description: `Welcome, <@${interaction.user.id}>!\n\nPlease describe your issue in detail. ${CONFIG.supportRoleId ? `<@&${CONFIG.supportRoleId}>` : 'A staff member'} will assist you shortly.`,
@@ -937,13 +1295,11 @@ async function handleTicketCommand(interaction) {
       components: [closeButton]
     });
 
-    // Reply to user
     await interaction.reply({
       ephemeral: true,
       content: Utils.pad(`✅ Ticket created: ${ticketChannel}`)
     });
 
-    // Log
     Utils.sendLog(interaction.guild, Utils.embed({
       title: '🎟️ Ticket Opened',
       color: CONFIG.colors.success,
@@ -956,7 +1312,6 @@ async function handleTicketCommand(interaction) {
   }
 
   if (subcommand === 'close') {
-    // Check if in a ticket channel
     const isTicket = 
       interaction.channel.parentId === CONFIG.ticketCategoryId ||
       interaction.channel.parent?.name.toLowerCase().includes('ticket') ||
@@ -969,7 +1324,6 @@ async function handleTicketCommand(interaction) {
       });
     }
 
-    // Check permissions
     const canClose = 
       Utils.hasPermission(interaction.member, PermissionFlagsBits.ManageChannels) ||
       (CONFIG.supportRoleId && interaction.member.roles.cache.has(CONFIG.supportRoleId));
@@ -989,7 +1343,6 @@ async function handleTicketCommand(interaction) {
       })]
     });
 
-    // Remove from active tickets
     for (const [userId, channelId] of activeTickets) {
       if (channelId === interaction.channel.id) {
         activeTickets.delete(userId);
@@ -997,7 +1350,6 @@ async function handleTicketCommand(interaction) {
       }
     }
 
-    // Log
     Utils.sendLog(interaction.guild, Utils.embed({
       title: '🎟️ Ticket Closed',
       color: CONFIG.colors.error,
@@ -1008,7 +1360,6 @@ async function handleTicketCommand(interaction) {
       ]
     }));
 
-    // Delete channel after 5 seconds
     setTimeout(() => {
       interaction.channel.delete().catch(console.error);
     }, 5000);
@@ -1017,6 +1368,14 @@ async function handleTicketCommand(interaction) {
 
 // ==================== COMMAND: /stats ====================
 async function handleStatsCommand(interaction) {
+  // Admin check
+  if (!Utils.hasPermission(interaction.member, PermissionFlagsBits.ManageGuild)) {
+    return interaction.reply({
+      ephemeral: true,
+      content: Utils.pad('❌ Only administrators can view bot statistics.')
+    });
+  }
+
   const uptime = process.uptime();
   const hours = Math.floor(uptime / 3600);
   const minutes = Math.floor((uptime % 3600) / 60);
@@ -1040,153 +1399,13 @@ async function handleStatsCommand(interaction) {
       { name: '🔢 Commands', value: `${slashCommands.length}`, inline: true },
       { name: '📈 Tracked Users', value: `${userStats.size}`, inline: true },
       { name: '🎟️ Active Tickets', value: `${activeTickets.size}`, inline: true },
-      { name: '🤖 Bot Version', value: 'v4.0', inline: true }
+      { name: '🤖 Bot Version', value: 'v4.5', inline: true }
     ],
     footer: true
   });
 
   await interaction.reply({ embeds: [embed] });
 }
-
-// ==================== ADDITIONAL EVENT LOGS ====================
-
-// Role changes
-client.on('guildMemberUpdate', async (oldMember, newMember) => {
-  const oldRoles = oldMember.roles.cache;
-  const newRoles = newMember.roles.cache;
-
-  const addedRoles = newRoles.filter(role => !oldRoles.has(role.id));
-  const removedRoles = oldRoles.filter(role => !newRoles.has(role.id));
-
-  if (addedRoles.size > 0 || removedRoles.size > 0) {
-    const fields = [];
-
-    if (addedRoles.size > 0) {
-      fields.push({
-        name: '➕ Added Roles',
-        value: addedRoles.map(r => r.name).join(', '),
-        inline: false
-      });
-    }
-
-    if (removedRoles.size > 0) {
-      fields.push({
-        name: '➖ Removed Roles',
-        value: removedRoles.map(r => r.name).join(', '),
-        inline: false
-      });
-    }
-
-    const embed = Utils.embed({
-      title: '🎭 Member Roles Updated',
-      color: CONFIG.colors.info,
-      thumbnail: newMember.user.displayAvatarURL(),
-      fields: [
-        { name: '👤 User', value: `${newMember.user.tag} (${newMember.id})`, inline: false },
-        ...fields
-      ]
-    });
-
-    Utils.sendLog(newMember.guild, embed);
-  }
-
-  // Nickname changes
-  if (oldMember.nickname !== newMember.nickname) {
-    const embed = Utils.embed({
-      title: '✏️ Nickname Changed',
-      color: CONFIG.colors.info,
-      thumbnail: newMember.user.displayAvatarURL(),
-      fields: [
-        { name: '👤 User', value: newMember.user.tag, inline: true },
-        { name: '📝 Old Nickname', value: oldMember.nickname || '*None*', inline: true },
-        { name: '📝 New Nickname', value: newMember.nickname || '*None*', inline: true }
-      ]
-    });
-
-    Utils.sendLog(newMember.guild, embed);
-  }
-});
-
-// Channel create/delete
-client.on('channelCreate', async (channel) => {
-  if (!channel.guild) return;
-
-  const typeMap = {
-    [ChannelType.GuildText]: 'Text Channel',
-    [ChannelType.GuildVoice]: 'Voice Channel',
-    [ChannelType.GuildCategory]: 'Category',
-    [ChannelType.GuildAnnouncement]: 'Announcement Channel',
-    [ChannelType.GuildStageVoice]: 'Stage Channel',
-    [ChannelType.GuildForum]: 'Forum Channel'
-  };
-
-  const embed = Utils.embed({
-    title: '➕ Channel Created',
-    color: CONFIG.colors.success,
-    fields: [
-      { name: '📺 Channel', value: `${channel}`, inline: true },
-      { name: '🏷️ Name', value: channel.name, inline: true },
-      { name: '📋 Type', value: typeMap[channel.type] || 'Unknown', inline: true }
-    ]
-  });
-
-  Utils.sendLog(channel.guild, embed);
-});
-
-client.on('channelDelete', async (channel) => {
-  if (!channel.guild) return;
-
-  const typeMap = {
-    [ChannelType.GuildText]: 'Text Channel',
-    [ChannelType.GuildVoice]: 'Voice Channel',
-    [ChannelType.GuildCategory]: 'Category',
-    [ChannelType.GuildAnnouncement]: 'Announcement Channel',
-    [ChannelType.GuildStageVoice]: 'Stage Channel',
-    [ChannelType.GuildForum]: 'Forum Channel'
-  };
-
-  const embed = Utils.embed({
-    title: '🗑️ Channel Deleted',
-    color: CONFIG.colors.error,
-    fields: [
-      { name: '🏷️ Name', value: channel.name, inline: true },
-      { name: '📋 Type', value: typeMap[channel.type] || 'Unknown', inline: true },
-      { name: '🆔 ID', value: channel.id, inline: true }
-    ]
-  });
-
-  Utils.sendLog(channel.guild, embed);
-});
-
-// Bans
-client.on('guildBanAdd', async (ban) => {
-  const embed = Utils.embed({
-    title: '🔨 Member Banned',
-    color: CONFIG.colors.error,
-    thumbnail: ban.user.displayAvatarURL(),
-    fields: [
-      { name: '👤 User', value: `${ban.user.tag}`, inline: true },
-      { name: '🆔 ID', value: ban.user.id, inline: true },
-      { name: '📋 Reason', value: ban.reason || 'No reason provided', inline: false }
-    ]
-  });
-
-  Utils.sendLog(ban.guild, embed);
-});
-
-client.on('guildBanRemove', async (ban) => {
-  const embed = Utils.embed({
-    title: '🔓 Member Unbanned',
-    color: CONFIG.colors.success,
-    thumbnail: ban.user.displayAvatarURL(),
-    fields: [
-      { name: '👤 User', value: `${ban.user.tag}`, inline: true },
-      { name: '🆔 ID', value: ban.user.id, inline: true }
-    ]
-  });
-
-  Utils.sendLog(ban.guild, embed);
-});
 
 // ==================== ERROR HANDLING ====================
 process.on('unhandledRejection', (error) => {

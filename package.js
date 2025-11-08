@@ -1,14 +1,10 @@
 {
   "name": "xaver",
-  "version": "0.0.3",
-  "description": "Xaver — Sarikaze's Son",
-  "main": "index.js",
+  "version": "5.0.0",
   "type": "module",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
-  },
-  "engines": {
-    "node": ">=18"
   },
   "dependencies": {
     "discord.js": "^14.15.3",

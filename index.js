@@ -1,6 +1,6 @@
 // =========================
-// Xaver v4.5 — Professional Edition 🗡️✨
-// NEW: Verifier System, Enhanced Welcomer, Role Logs
+// Xaver v5.0 — MEGA Edition 🔥
+// Phase 1: Config, Warns, AFK, Starboard, Polls, Reaction Roles
 // =========================
 
 import 'dotenv/config';
@@ -15,21 +15,16 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ActionRowBuilder,
-  AuditLogEvent
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder
 } from 'discord.js';
 
 // ==================== CONFIG ====================
 const CONFIG = {
   token: process.env.DISCORD_TOKEN,
   port: Number(process.env.PORT || 3000),
-  ownerId: process.env.OWNER_ID || null,
+  ownerId: '1410618634732048548',
   prefix: process.env.PREFIX || 'x!',
-  logChannelId: process.env.LOG_CHANNEL_ID || '1435639902233559111',
-  welcomeChannelId: process.env.WELCOME_CHANNEL_ID || '1435631217918607390',
-  verifyChannelId: process.env.VERIFY_CHANNEL_ID || null,
-  verifyRoleId: process.env.VERIFY_ROLE_ID || null,
-  supportRoleId: process.env.SUPPORT_ROLE_ID || null,
-  ticketCategoryId: process.env.TICKET_CATEGORY_ID || null,
   healthKey: process.env.HEALTH_KEY || null,
   colors: {
     brand: 0x7C3AED,
@@ -40,43 +35,38 @@ const CONFIG = {
   }
 };
 
-if (!CONFIG.token) throw new Error('❌ DISCORD_TOKEN is missing in .env file!');
+if (!CONFIG.token) throw new Error('❌ DISCORD_TOKEN is missing!');
 
-// ==================== EXPRESS KEEPALIVE ====================
+// ==================== EXPRESS ====================
 const app = express();
 app.use(express.json());
 
 app.get('/', (_req, res) => {
   res.json({
     status: 'online',
-    bot: 'Xaver v4.5',
+    bot: 'Xaver v5.0',
     uptime: process.uptime(),
-    message: '🟣 Xaver is elegantly operational.'
+    message: '🔥 Xaver MEGA Edition is running!'
   });
 });
 
 app.get('/health', (req, res) => {
   if (CONFIG.healthKey && req.query.key !== CONFIG.healthKey) {
-    return res.status(403).json({ error: 'Invalid health key' });
+    return res.status(403).json({ error: 'Invalid key' });
   }
-  res.status(200).json({ 
-    status: 'healthy',
-    uptime: process.uptime(),
-    memoryUsage: process.memoryUsage()
-  });
+  res.status(200).json({ status: 'healthy', uptime: process.uptime() });
 });
 
-app.listen(CONFIG.port, () => {
-  console.log(`🌐 HTTP server running on port ${CONFIG.port}`);
-});
+app.listen(CONFIG.port, () => console.log(`🌐 HTTP on :${CONFIG.port}`));
 
-// ==================== DISCORD CLIENT ====================
+// ==================== CLIENT ====================
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildModeration
   ],
@@ -84,1088 +74,1459 @@ const client = new Client({
     Partials.Channel,
     Partials.Message,
     Partials.GuildMember,
-    Partials.User
+    Partials.User,
+    Partials.Reaction
   ]
 });
 
-// ==================== IN-MEMORY STORES ====================
-const userStats = new Map();
-const cooldowns = new Map();
-const activeTickets = new Map();
+// ==================== IN-MEMORY STORAGE ====================
+const guildConfigs = new Map(); // guildId -> config object
+const userStats = new Map();     // `${guildId}:${userId}` -> {xp, level, messages}
+const cooldowns = new Map();     // cooldowns
+const activeTickets = new Map(); // userId -> channelId
+const warns = new Map();         // `${guildId}:${userId}` -> [{id, reason, moderator, date}]
+const afkUsers = new Map();      // userId -> {reason, since}
+const starboardCache = new Map();// messageId -> starboardMessageId
+const activePolls = new Map();   // messageId -> poll data
+const reactionRolePanels = new Map(); // messageId -> panel data
 
-// ==================== UTILITY FUNCTIONS ====================
+// ==================== UTILS ====================
 const Utils = {
-  pad: (str) => `\u200B${str}`,
-  xpForLevel: (level) => 5 * level * level + 20 * level + 10,
-  userKey: (guildId, userId) => `${guildId}:${userId}`,
-  timestamp: (date = new Date()) => Math.floor(date.getTime() / 1000),
+  pad: (s) => `\u200B${s}`,
+  xpForLevel: (l) => 5 * l * l + 20 * l + 10,
+  userKey: (g, u) => `${g}:${u}`,
+  timestamp: (d = new Date()) => Math.floor(d.getTime() / 1000),
 
-  clip: (text, maxLength = 1000) => {
+  clip: (text, max = 1000) => {
     if (!text) return '*(no content)*';
-    return text.length > maxLength ? text.slice(0, maxLength - 3) + '...' : text;
+    return text.length > max ? text.slice(0, max - 3) + '...' : text;
   },
 
-  embed: ({ 
-    title, 
-    description, 
-    fields, 
-    color = CONFIG.colors.brand, 
-    footer = true,
-    author,
-    thumbnail,
-    image
-  }) => {
-    const embed = new EmbedBuilder()
-      .setColor(color)
-      .setTimestamp();
-
-    if (title) embed.setTitle(title);
-    if (description) embed.setDescription(Utils.pad(description));
-    if (fields?.length) embed.addFields(fields);
-    if (author) embed.setAuthor(author);
-    if (thumbnail) embed.setThumbnail(thumbnail);
-    if (image) embed.setImage(image);
-
+  embed: ({ title, description, fields, color = CONFIG.colors.brand, footer = true, author, thumbnail, image }) => {
+    const e = new EmbedBuilder().setColor(color).setTimestamp();
+    if (title) e.setTitle(title);
+    if (description) e.setDescription(Utils.pad(description));
+    if (fields?.length) e.addFields(fields);
+    if (author) e.setAuthor(author);
+    if (thumbnail) e.setThumbnail(thumbnail);
+    if (image) e.setImage(image);
     if (footer && client.user) {
-      embed.setFooter({ 
-        text: 'Xaver v4.5', 
-        iconURL: client.user.displayAvatarURL() 
+      e.setFooter({ text: 'Xaver v5.0 MEGA', iconURL: client.user.displayAvatarURL() });
+    }
+    return e;
+  },
+
+  getConfig: (guildId) => {
+    if (!guildConfigs.has(guildId)) {
+      guildConfigs.set(guildId, {
+        logChannel: null,
+        welcomeChannel: null,
+        verifyRole: null,
+        supportRole: null,
+        ticketCategory: null,
+        starboardChannel: null,
+        starboardEmoji: '⭐',
+        starboardThreshold: 3,
+        autoStrikeKick: 3,
+        autoStrikeBan: 5
       });
     }
-
-    return embed;
+    return guildConfigs.get(guildId);
   },
 
   sendLog: async (guild, embed) => {
-    if (!CONFIG.logChannelId) return;
+    const cfg = Utils.getConfig(guild.id);
+    if (!cfg.logChannel) return;
     try {
-      const channel = guild.channels.cache.get(CONFIG.logChannelId);
-      if (channel?.isTextBased()) {
-        await channel.send({ embeds: [embed] });
-      }
-    } catch (error) {
-      console.error('❌ Failed to send log:', error.message);
+      const ch = guild.channels.cache.get(cfg.logChannel);
+      if (ch?.isTextBased()) await ch.send({ embeds: [embed] });
+    } catch (e) {
+      console.error('Log error:', e.message);
     }
   },
 
-  hasPermission: (member, permission) => {
-    return member.permissions.has(permission) || 
-           (CONFIG.ownerId && member.id === CONFIG.ownerId);
+  hasPermission: (member, perm) => {
+    return member.id === CONFIG.ownerId || member.permissions.has(perm);
+  },
+
+  isMod: (member) => {
+    return member.id === CONFIG.ownerId || 
+           member.permissions.has(PermissionFlagsBits.ModerateMembers);
+  }
+};
+
+// ==================== XP SYSTEM ====================
+const XPSystem = {
+  give: (guildId, userId, username) => {
+    const key = Utils.userKey(guildId, userId);
+    const cdKey = `xp:${key}`;
+    const now = Date.now();
+    const last = cooldowns.get(cdKey) || 0;
+    if (now - last < 10000) return null;
+
+    const s = userStats.get(key) || { xp: 0, level: 0, messages: 0, username };
+    s.username = username;
+    s.messages++;
+    s.xp += 10 + Math.floor(Math.random() * 6);
+    cooldowns.set(cdKey, now);
+
+    let leveled = false;
+    while (s.xp >= Utils.xpForLevel(s.level)) {
+      s.xp -= Utils.xpForLevel(s.level);
+      s.level++;
+      leveled = true;
+    }
+    userStats.set(key, s);
+    return { stats: s, leveled };
+  }
+};
+
+// ==================== WARN SYSTEM ====================
+const WarnSystem = {
+  add: (guildId, userId, reason, modId, modTag) => {
+    const key = Utils.userKey(guildId, userId);
+    const list = warns.get(key) || [];
+    const warn = {
+      id: Date.now().toString(),
+      reason,
+      moderator: modTag,
+      moderatorId: modId,
+      date: new Date()
+    };
+    list.push(warn);
+    warns.set(key, list);
+    return { warn, total: list.length };
+  },
+
+  get: (guildId, userId) => {
+    return warns.get(Utils.userKey(guildId, userId)) || [];
+  },
+
+  remove: (guildId, userId, warnId) => {
+    const key = Utils.userKey(guildId, userId);
+    const list = warns.get(key) || [];
+    const filtered = list.filter(w => w.id !== warnId);
+    warns.set(key, filtered);
+    return list.length - filtered.length > 0;
+  },
+
+  clear: (guildId, userId) => {
+    const key = Utils.userKey(guildId, userId);
+    const count = (warns.get(key) || []).length;
+    warns.delete(key);
+    return count;
   }
 };
 
 // ==================== SLASH COMMANDS ====================
-const slashCommands = [
-  {
-    name: 'help',
-    description: 'Display all available commands and features'
+const commands = [
+  { 
+    name: 'help', 
+    description: 'Show all commands' 
   },
-  {
-    name: 'level',
-    description: 'View level and XP statistics',
-    options: [{
-      name: 'user',
-      description: 'Target user (leave empty for yourself)',
-      type: 6,
-      required: false
-    }]
+  { 
+    name: 'level', 
+    description: 'View level stats', 
+    options: [{ 
+      name: 'user', 
+      description: 'User to check',
+      type: 6, 
+      required: false 
+    }] 
   },
-  {
-    name: 'leaderboard',
-    description: 'View the top-ranked members on this server'
+  { 
+    name: 'leaderboard', 
+    description: 'Top members' 
   },
+
+  // Config
   {
-    name: 'say',
-    description: 'Send a message through the bot (Admin only)',
+    name: 'config',
+    description: 'Configure server settings',
     default_member_permissions: String(PermissionFlagsBits.ManageGuild),
     options: [
       {
-        name: 'text',
-        description: 'The message content',
-        type: 3,
-        required: true
+        type: 1, 
+        name: 'show', 
+        description: 'Show current configuration'
       },
       {
-        name: 'channel',
-        description: 'Target channel (defaults to current)',
-        type: 7,
-        required: false
+        type: 1, 
+        name: 'set', 
+        description: 'Change a configuration setting',
+        options: [
+          {
+            name: 'key',
+            description: 'Setting to change',
+            type: 3,
+            required: true,
+            choices: [
+              { name: 'log_channel', value: 'logChannel' },
+              { name: 'welcome_channel', value: 'welcomeChannel' },
+              { name: 'starboard_channel', value: 'starboardChannel' },
+              { name: 'verify_role', value: 'verifyRole' },
+              { name: 'support_role', value: 'supportRole' },
+              { name: 'ticket_category', value: 'ticketCategory' },
+              { name: 'starboard_emoji', value: 'starboardEmoji' },
+              { name: 'starboard_threshold', value: 'starboardThreshold' },
+              { name: 'auto_strike_kick', value: 'autoStrikeKick' },
+              { name: 'auto_strike_ban', value: 'autoStrikeBan' }
+            ]
+          },
+          { 
+            name: 'value', 
+            description: 'New value for the setting', 
+            type: 3, 
+            required: true 
+          }
+        ]
+      }
+    ]
+  },
+
+  // Moderation
+  {
+    name: 'warn',
+    description: 'Warn a user',
+    default_member_permissions: String(PermissionFlagsBits.ModerateMembers),
+    options: [
+      { 
+        name: 'user', 
+        description: 'User to warn', 
+        type: 6, 
+        required: true 
+      },
+      { 
+        name: 'reason', 
+        description: 'Reason for the warning', 
+        type: 3, 
+        required: true 
       }
     ]
   },
   {
-    name: 'announce',
-    description: 'Create a professional announcement with interactive buttons',
+    name: 'strikes',
+    description: 'View user warnings',
+    default_member_permissions: String(PermissionFlagsBits.ModerateMembers),
+    options: [{ 
+      name: 'user', 
+      description: 'User to check warnings for', 
+      type: 6, 
+      required: true 
+    }]
+  },
+  {
+    name: 'pardon',
+    description: 'Remove user warnings',
+    default_member_permissions: String(PermissionFlagsBits.ModerateMembers),
+    options: [
+      { 
+        name: 'user', 
+        description: 'User to pardon', 
+        type: 6, 
+        required: true 
+      },
+      { 
+        name: 'warn_id', 
+        description: 'Specific warning ID to remove', 
+        type: 3, 
+        required: false 
+      }
+    ]
+  },
+
+  // AFK
+  {
+    name: 'afk',
+    description: 'Set your AFK status',
+    options: [{ 
+      name: 'reason', 
+      description: 'Reason for being AFK', 
+      type: 3, 
+      required: false 
+    }]
+  },
+
+  // Polls
+  {
+    name: 'poll',
+    description: 'Create a poll',
+    default_member_permissions: String(PermissionFlagsBits.ManageGuild),
+    options: [
+      { 
+        name: 'question', 
+        description: 'Poll question', 
+        type: 3, 
+        required: true 
+      },
+      { 
+        name: 'options', 
+        description: 'Options separated by semicolons (Yes;No;Maybe)', 
+        type: 3, 
+        required: true 
+      },
+      { 
+        name: 'duration', 
+        description: 'Duration in minutes', 
+        type: 4, 
+        required: false 
+      }
+    ]
+  },
+
+  // Reaction Roles
+  {
+    name: 'roles',
+    description: 'Manage reaction roles',
     default_member_permissions: String(PermissionFlagsBits.ManageGuild),
     options: [
       {
-        name: 'title',
-        description: 'Announcement title',
-        type: 3,
-        required: true
+        type: 1, 
+        name: 'panel', 
+        description: 'Create a reaction role panel',
+        options: [
+          { 
+            name: 'title', 
+            description: 'Panel title', 
+            type: 3, 
+            required: true 
+          },
+          { 
+            name: 'description', 
+            description: 'Panel description', 
+            type: 3, 
+            required: false 
+          },
+          { 
+            name: 'type', 
+            description: 'Panel type', 
+            type: 3,
+            choices: [
+              { name: 'Buttons', value: 'buttons' },
+              { name: 'Dropdown', value: 'dropdown' }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+
+  // Say
+  {
+    name: 'say',
+    description: 'Send a message as the bot',
+    default_member_permissions: String(PermissionFlagsBits.ManageGuild),
+    options: [
+      { 
+        name: 'text', 
+        description: 'Message to send', 
+        type: 3, 
+        required: true 
       },
-      {
-        name: 'message',
-        description: 'Announcement content',
-        type: 3,
-        required: true
+      { 
+        name: 'channel', 
+        description: 'Channel to send message in', 
+        type: 7, 
+        required: false 
+      }
+    ]
+  },
+
+  // Announce
+  {
+    name: 'announce',
+    description: 'Create an announcement',
+    default_member_permissions: String(PermissionFlagsBits.ManageGuild),
+    options: [
+      { 
+        name: 'title', 
+        description: 'Announcement title', 
+        type: 3, 
+        required: true 
       },
-      {
-        name: 'channel',
-        description: 'Target channel',
-        type: 7,
-        required: false
+      { 
+        name: 'message', 
+        description: 'Announcement message', 
+        type: 3, 
+        required: true 
       },
-      {
-        name: 'ping',
-        description: 'Who to mention',
-        type: 3,
-        required: false,
+      { 
+        name: 'channel', 
+        description: 'Channel to send announcement', 
+        type: 7, 
+        required: false 
+      },
+      { 
+        name: 'ping', 
+        description: 'Who to ping', 
+        type: 3, 
+        required: false, 
         choices: [
           { name: 'None', value: 'none' },
           { name: '@everyone', value: 'everyone' },
           { name: '@here', value: 'here' },
-          { name: 'Specific Role', value: 'role' }
+          { name: 'Role', value: 'role' }
         ]
       },
-      {
-        name: 'role',
-        description: 'Role to ping (if ping=role)',
-        type: 8,
-        required: false
+      { 
+        name: 'role', 
+        description: 'Role to ping if ping type is role', 
+        type: 8, 
+        required: false 
       }
     ]
   },
+
+  // Ticket
   {
     name: 'ticket',
-    description: 'Manage support tickets',
-    default_member_permissions: String(PermissionFlagsBits.ManageGuild),
+    description: 'Ticket system',
     options: [
-      {
-        type: 1,
-        name: 'create',
-        description: 'Open a new support ticket'
+      { 
+        type: 1, 
+        name: 'create', 
+        description: 'Create a new support ticket' 
       },
-      {
-        type: 1,
-        name: 'close',
-        description: 'Close the current ticket channel'
+      { 
+        type: 1, 
+        name: 'close', 
+        description: 'Close the current ticket' 
       }
     ]
   },
-  {
-    name: 'stats',
-    description: 'View bot statistics and information',
-    default_member_permissions: String(PermissionFlagsBits.ManageGuild)
-  },
+
+  // Verify
   {
     name: 'verify',
-    description: 'Setup verification system (Admin only)',
+    description: 'Setup verification system',
     default_member_permissions: String(PermissionFlagsBits.ManageGuild),
     options: [
-      {
-        name: 'channel',
-        description: 'Channel for verification message',
-        type: 7,
-        required: false
+      { 
+        name: 'role', 
+        description: 'Role to give after verification', 
+        type: 8, 
+        required: true 
       },
-      {
-        name: 'role',
-        description: 'Role to give after verification',
-        type: 8,
-        required: true
+      { 
+        name: 'channel', 
+        description: 'Channel to send verification message', 
+        type: 7, 
+        required: false 
       }
     ]
+  },
+
+  // Stats
+  { 
+    name: 'stats', 
+    description: 'View bot statistics' 
   }
 ];
 
-// ==================== XP SYSTEM ====================
-const XPSystem = {
-  giveXP: (guildId, userId, username) => {
-    const key = Utils.userKey(guildId, userId);
-    const cooldownKey = `xp:${key}`;
-    const now = Date.now();
-    const lastXP = cooldowns.get(cooldownKey) || 0;
-
-    if (now - lastXP < 10000) return null;
-
-    const stats = userStats.get(key) || {
-      xp: 0,
-      level: 0,
-      lastSeen: null,
-      username: username,
-      messageCount: 0
-    };
-
-    stats.username = username;
-    stats.lastSeen = new Date();
-    stats.messageCount++;
-
-    const xpGained = 10 + Math.floor(Math.random() * 6);
-    stats.xp += xpGained;
-
-    cooldowns.set(cooldownKey, now);
-
-    let leveledUp = false;
-    while (stats.xp >= Utils.xpForLevel(stats.level)) {
-      stats.xp -= Utils.xpForLevel(stats.level);
-      stats.level++;
-      leveledUp = true;
-    }
-
-    userStats.set(key, stats);
-
-    return { stats, leveledUp, xpGained };
-  }
-};
-
-// ==================== EVENT: READY ====================
+// ==================== READY ====================
 client.once('ready', async () => {
-  console.log(`\n${'='.repeat(50)}`);
-  console.log(`✅ Xaver v4.5 successfully logged in!`);
-  console.log(`👤 Username: ${client.user.tag}`);
-  console.log(`🆔 User ID: ${client.user.id}`);
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`🔥 Xaver v5.0 MEGA Edition | ${client.user.tag}`);
   console.log(`🏰 Servers: ${client.guilds.cache.size}`);
-  console.log(`${'='.repeat(50)}\n`);
+  console.log(`${'='.repeat(60)}\n`);
 
   client.user.setPresence({
-    activities: [{ name: `over ${client.guilds.cache.size} servers | /help` }],
+    activities: [{ name: 'Phase 1 MEGA Update! | /help' }],
     status: 'online'
   });
 
   const guilds = await client.guilds.fetch();
-  let successCount = 0;
-
-  for (const [guildId] of guilds) {
+  let ok = 0;
+  for (const [gid] of guilds) {
     try {
-      const guild = await client.guilds.fetch(guildId);
-      await guild.commands.set(slashCommands);
-      successCount++;
-    } catch (error) {
-      console.warn(`⚠️ Failed to register commands in guild ${guildId}:`, error.message);
+      const g = await client.guilds.fetch(gid);
+      await g.commands.set(commands);
+      ok++;
+    } catch (e) {
+      console.warn(`Failed ${gid}:`, e.message);
     }
   }
-
-  console.log(`🗡️ Slash commands deployed to ${successCount}/${guilds.size} servers\n`);
+  console.log(`✅ Commands in ${ok}/${guilds.size} guilds\n`);
 });
 
-// ==================== EVENT: MESSAGE CREATE (XP) ====================
-client.on('messageCreate', async (message) => {
-  if (!message.guild || message.author.bot) return;
+// ==================== MESSAGE CREATE ====================
+client.on('messageCreate', async (msg) => {
+  if (!msg.guild || msg.author.bot) return;
 
-  const result = XPSystem.giveXP(
-    message.guild.id,
-    message.author.id,
-    message.author.username
-  );
+  // AFK Check
+  if (afkUsers.has(msg.author.id)) {
+    afkUsers.delete(msg.author.id);
+    msg.reply({ content: '👋 Welcome back! Your AFK status has been removed.' }).catch(() => {});
+  }
 
-  if (result?.leveledUp) {
-    const levelUpEmbed = Utils.embed({
-      title: '🎉 Level Up!',
-      description: `**${message.author.username}** has reached **Level ${result.stats.level}**!`,
-      color: CONFIG.colors.success,
-      thumbnail: message.author.displayAvatarURL()
-    });
+  // Check mentions for AFK
+  msg.mentions.users.forEach(user => {
+    if (afkUsers.has(user.id)) {
+      const afk = afkUsers.get(user.id);
+      msg.reply({ 
+        content: `💤 **${user.username}** is AFK: ${afk.reason}\n*Since <t:${Utils.timestamp(afk.since)}:R>*` 
+      }).catch(() => {});
+    }
+  });
 
-    message.channel.send({ embeds: [levelUpEmbed] }).catch(() => {});
+  // XP
+  const result = XPSystem.give(msg.guild.id, msg.author.id, msg.author.username);
+  if (result?.leveled) {
+    msg.channel.send({
+      embeds: [Utils.embed({
+        title: '🎉 Level Up!',
+        description: `**${msg.author.username}** reached **Level ${result.stats.level}**!`,
+        color: CONFIG.colors.success,
+        thumbnail: msg.author.displayAvatarURL()
+      })]
+    }).catch(() => {});
   }
 });
 
-// ==================== EVENT: MESSAGE DELETE ====================
-client.on('messageDelete', async (message) => {
-  if (!message.guild || message.author?.bot) return;
-
-  const embed = Utils.embed({
+// ==================== MESSAGE DELETE ====================
+client.on('messageDelete', async (msg) => {
+  if (!msg.guild || msg.author?.bot) return;
+  Utils.sendLog(msg.guild, Utils.embed({
     title: '🗑️ Message Deleted',
     color: CONFIG.colors.warning,
     fields: [
-      { name: '👤 Author', value: `${message.author?.tag || 'Unknown'} (${message.author?.id || 'N/A'})`, inline: true },
-      { name: '📍 Channel', value: `<#${message.channel.id}>`, inline: true },
-      { name: '🕒 Time', value: `<t:${Utils.timestamp()}:R>`, inline: true },
-      { name: '📝 Content', value: Utils.clip(message.content || '*No text content*'), inline: false }
+      { name: '👤 Author', value: `${msg.author?.tag || 'Unknown'}`, inline: true },
+      { name: '📍 Channel', value: `<#${msg.channel.id}>`, inline: true },
+      { name: '📝 Content', value: Utils.clip(msg.content || '*No text*'), inline: false }
     ]
-  });
-
-  if (message.attachments.size > 0) {
-    embed.addFields({
-      name: '📎 Attachments',
-      value: message.attachments.map(a => a.url).join('\n')
-    });
-  }
-
-  Utils.sendLog(message.guild, embed);
+  }));
 });
 
-// ==================== EVENT: MESSAGE UPDATE ====================
-client.on('messageUpdate', async (oldMessage, newMessage) => {
-  if (!newMessage.guild || newMessage.author?.bot) return;
-  if (oldMessage.content === newMessage.content) return;
-
-  const embed = Utils.embed({
+// ==================== MESSAGE UPDATE ====================
+client.on('messageUpdate', async (old, newMsg) => {
+  if (!newMsg.guild || newMsg.author?.bot || old.content === newMsg.content) return;
+  Utils.sendLog(newMsg.guild, Utils.embed({
     title: '✏️ Message Edited',
     color: CONFIG.colors.info,
     fields: [
-      { name: '👤 Author', value: `${newMessage.author.tag} (${newMessage.author.id})`, inline: true },
-      { name: '📍 Channel', value: `<#${newMessage.channel.id}>`, inline: true },
-      { name: '🔗 Jump', value: `[Go to message](${newMessage.url})`, inline: true },
-      { name: '📝 Before', value: Utils.clip(oldMessage.content || '*No content*'), inline: false },
-      { name: '📝 After', value: Utils.clip(newMessage.content || '*No content*'), inline: false }
+      { name: '👤 Author', value: newMsg.author.tag, inline: true },
+      { name: '📍 Channel', value: `<#${newMsg.channel.id}>`, inline: true },
+      { name: '🔗 Jump', value: `[Link](${newMsg.url})`, inline: true },
+      { name: '📝 Before', value: Utils.clip(old.content || '*No content*'), inline: false },
+      { name: '📝 After', value: Utils.clip(newMsg.content), inline: false }
     ]
-  });
-
-  Utils.sendLog(newMessage.guild, embed);
+  }));
 });
 
-// ==================== EVENT: MEMBER JOIN ====================
-client.on('guildMemberAdd', async (member) => {
-  // Enhanced Welcome message
-  const welcomeChannel = member.guild.channels.cache.get(CONFIG.welcomeChannelId) || 
-                         member.guild.systemChannel;
+// ==================== REACTION ADD (Starboard) ====================
+client.on('messageReactionAdd', async (reaction, user) => {
+  if (user.bot) return;
 
-  if (welcomeChannel?.isTextBased()) {
-    const accountAge = Math.floor((Date.now() - member.user.createdAt.getTime()) / (1000 * 60 * 60 * 24));
-
-    const welcomeEmbed = Utils.embed({
-      title: '🎉 Welcome to the Server!',
-      description: `Hey **${member.user.username}**, welcome to **${member.guild.name}**!\n\nYou are member **#${member.guild.memberCount}**`,
-      color: CONFIG.colors.success,
-      thumbnail: member.user.displayAvatarURL({ size: 256 }),
-      fields: [
-        { name: '📅 Account Created', value: `<t:${Utils.timestamp(member.user.createdAt)}:R> (${accountAge} days old)`, inline: false },
-        { name: '📋 User ID', value: member.id, inline: true }
-      ],
-      image: member.guild.bannerURL({ size: 1024 })
-    });
-
-    welcomeChannel.send({ 
-      content: `👋 Welcome ${member}!`,
-      embeds: [welcomeEmbed] 
-    }).catch(() => {});
+  // Fetch partial
+  if (reaction.partial) {
+    try { await reaction.fetch(); } catch { return; }
+  }
+  if (reaction.message.partial) {
+    try { await reaction.message.fetch(); } catch { return; }
   }
 
-  // Log with more details
-  const accountAge = Math.floor((Date.now() - member.user.createdAt.getTime()) / (1000 * 60 * 60 * 24));
-  const isNewAccount = accountAge < 7;
+  const msg = reaction.message;
+  if (!msg.guild) return;
 
-  const logEmbed = Utils.embed({
-    title: '➕ Member Joined',
-    color: isNewAccount ? CONFIG.colors.warning : CONFIG.colors.success,
-    thumbnail: member.user.displayAvatarURL(),
+  const cfg = Utils.getConfig(msg.guild.id);
+  if (!cfg.starboardChannel) return;
+
+  // Check emoji
+  if (reaction.emoji.name !== cfg.starboardEmoji) return;
+
+  // Check threshold
+  if (reaction.count < cfg.starboardThreshold) return;
+
+  // Don't star own message
+  if (msg.author.id === user.id) return;
+
+  // Already on starboard?
+  if (starboardCache.has(msg.id)) return;
+
+  const starCh = msg.guild.channels.cache.get(cfg.starboardChannel);
+  if (!starCh?.isTextBased()) return;
+
+  const embed = Utils.embed({
+    color: CONFIG.colors.warning,
+    author: { name: msg.author.tag, iconURL: msg.author.displayAvatarURL() },
+    description: Utils.clip(msg.content || '*No text content*', 500),
     fields: [
-      { name: '👤 User', value: `${member.user.tag}`, inline: true },
-      { name: '🆔 ID', value: member.id, inline: true },
-      { name: '📅 Account Age', value: `${accountAge} days`, inline: true },
-      { name: '📅 Created', value: `<t:${Utils.timestamp(member.user.createdAt)}:R>`, inline: true },
-      { name: '👥 Member Count', value: `${member.guild.memberCount}`, inline: true },
-      { name: '⚠️ New Account?', value: isNewAccount ? 'Yes - Suspicious!' : 'No', inline: true }
-    ]
+      { name: '📍 Channel', value: `<#${msg.channel.id}>`, inline: true },
+      { name: '🔗 Jump', value: `[Go to message](${msg.url})`, inline: true },
+      { name: '⭐ Stars', value: `${reaction.count}`, inline: true }
+    ],
+    timestamp: msg.createdAt,
+    footer: false
   });
 
-  Utils.sendLog(member.guild, logEmbed);
+  if (msg.attachments.size > 0) {
+    const first = msg.attachments.first();
+    if (first.contentType?.startsWith('image')) {
+      embed.setImage(first.url);
+    }
+  }
+
+  try {
+    const starMsg = await starCh.send({ embeds: [embed] });
+    starboardCache.set(msg.id, starMsg.id);
+  } catch (e) {
+    console.error('Starboard error:', e.message);
+  }
 });
 
-// ==================== EVENT: MEMBER LEAVE ====================
+// ==================== MEMBER JOIN ====================
+client.on('guildMemberAdd', async (member) => {
+  const cfg = Utils.getConfig(member.guild.id);
+
+  if (cfg.welcomeChannel) {
+    const ch = member.guild.channels.cache.get(cfg.welcomeChannel);
+    if (ch?.isTextBased()) {
+      const accountAge = Math.floor((Date.now() - member.user.createdAt.getTime()) / 86400000);
+      ch.send({
+        content: `👋 Welcome ${member}!`,
+        embeds: [Utils.embed({
+          title: '🎉 Welcome!',
+          description: `Welcome to **${member.guild.name}**, ${member.user.username}!\nYou are member **#${member.guild.memberCount}**`,
+          thumbnail: member.user.displayAvatarURL({ size: 256 }),
+          fields: [
+            { name: '📅 Account Age', value: `${accountAge} days old`, inline: true }
+          ],
+          color: CONFIG.colors.success
+        })]
+      }).catch(() => {});
+    }
+  }
+
+  Utils.sendLog(member.guild, Utils.embed({
+    title: '➕ Member Joined',
+    color: CONFIG.colors.success,
+    thumbnail: member.user.displayAvatarURL(),
+    fields: [
+      { name: '👤 User', value: member.user.tag, inline: true },
+      { name: '🆔 ID', value: member.id, inline: true },
+      { name: '👥 Count', value: `${member.guild.memberCount}`, inline: true }
+    ]
+  }));
+});
+
+// ==================== MEMBER LEAVE ====================
 client.on('guildMemberRemove', async (member) => {
-  const embed = Utils.embed({
+  Utils.sendLog(member.guild, Utils.embed({
     title: '➖ Member Left',
     color: CONFIG.colors.error,
     thumbnail: member.user?.displayAvatarURL(),
     fields: [
-      { name: '👤 User', value: `${member.user?.tag || 'Unknown'}`, inline: true },
+      { name: '👤 User', value: member.user?.tag || 'Unknown', inline: true },
       { name: '🆔 ID', value: member.id, inline: true },
-      { name: '📅 Joined Server', value: member.joinedAt ? `<t:${Utils.timestamp(member.joinedAt)}:R>` : 'Unknown', inline: true },
-      { name: '👥 Member Count', value: `${member.guild.memberCount}`, inline: true },
-      { name: '🎭 Roles', value: member.roles.cache.size > 1 ? member.roles.cache.filter(r => r.id !== member.guild.id).map(r => r.name).join(', ') : 'None', inline: false }
+      { name: '👥 Count', value: `${member.guild.memberCount}`, inline: true }
     ]
-  });
-
-  Utils.sendLog(member.guild, embed);
+  }));
 });
 
-// ==================== EVENT: VOICE STATE UPDATE ====================
-client.on('voiceStateUpdate', async (oldState, newState) => {
-  const guild = newState.guild || oldState.guild;
-  if (!guild) return;
-
-  const member = newState.member || oldState.member;
-  if (!member || member.user.bot) return;
+// ==================== VOICE STATE ====================
+client.on('voiceStateUpdate', async (oldS, newS) => {
+  const guild = newS.guild || oldS.guild;
+  const member = newS.member || oldS.member;
+  if (!guild || !member || member.user.bot) return;
 
   let embed = null;
-
-  if (!oldState.channelId && newState.channelId) {
+  if (!oldS.channelId && newS.channelId) {
     embed = Utils.embed({
-      title: '🎧 Voice Channel Joined',
+      title: '🎧 VC Joined',
       color: CONFIG.colors.success,
       fields: [
-        { name: '👤 User', value: `${member.user.tag}`, inline: true },
-        { name: '📍 Channel', value: `<#${newState.channelId}>`, inline: true },
-        { name: '🕒 Time', value: `<t:${Utils.timestamp()}:R>`, inline: true }
+        { name: '👤 User', value: member.user.tag, inline: true },
+        { name: '📍 Channel', value: `<#${newS.channelId}>`, inline: true }
       ]
     });
-  }
-  else if (oldState.channelId && !newState.channelId) {
+  } else if (oldS.channelId && !newS.channelId) {
     embed = Utils.embed({
-      title: '🎧 Voice Channel Left',
+      title: '🎧 VC Left',
       color: CONFIG.colors.error,
       fields: [
-        { name: '👤 User', value: `${member.user.tag}`, inline: true },
-        { name: '📍 Channel', value: `<#${oldState.channelId}>`, inline: true },
-        { name: '🕒 Time', value: `<t:${Utils.timestamp()}:R>`, inline: true }
+        { name: '👤 User', value: member.user.tag, inline: true },
+        { name: '📍 Channel', value: `<#${oldS.channelId}>`, inline: true }
       ]
     });
-  }
-  else if (oldState.channelId && newState.channelId && oldState.channelId !== newState.channelId) {
+  } else if (oldS.channelId && newS.channelId && oldS.channelId !== newS.channelId) {
     embed = Utils.embed({
-      title: '🎧 Voice Channel Switched',
+      title: '🎧 VC Switched',
       color: CONFIG.colors.info,
       fields: [
-        { name: '👤 User', value: `${member.user.tag}`, inline: true },
-        { name: '📍 From', value: `<#${oldState.channelId}>`, inline: true },
-        { name: '📍 To', value: `<#${newState.channelId}>`, inline: true }
+        { name: '👤 User', value: member.user.tag, inline: true },
+        { name: '📍 From → To', value: `<#${oldS.channelId}> → <#${newS.channelId}>`, inline: true }
       ]
     });
   }
-
   if (embed) Utils.sendLog(guild, embed);
 });
 
-// ==================== EVENT: ROLE CREATE ====================
+// ==================== ROLE EVENTS ====================
 client.on('roleCreate', async (role) => {
-  const embed = Utils.embed({
+  Utils.sendLog(role.guild, Utils.embed({
     title: '🎭 Role Created',
     color: CONFIG.colors.success,
     fields: [
       { name: '🏷️ Name', value: role.name, inline: true },
-      { name: '🆔 ID', value: role.id, inline: true },
       { name: '🎨 Color', value: role.hexColor, inline: true },
-      { name: '📍 Position', value: `${role.position}`, inline: true },
-      { name: '🔒 Hoisted', value: role.hoist ? 'Yes' : 'No', inline: true },
-      { name: '📌 Mentionable', value: role.mentionable ? 'Yes' : 'No', inline: true }
+      { name: '🆔 ID', value: role.id, inline: true }
     ]
-  });
-
-  Utils.sendLog(role.guild, embed);
+  }));
 });
 
-// ==================== EVENT: ROLE DELETE ====================
 client.on('roleDelete', async (role) => {
-  const embed = Utils.embed({
+  Utils.sendLog(role.guild, Utils.embed({
     title: '🗑️ Role Deleted',
     color: CONFIG.colors.error,
     fields: [
       { name: '🏷️ Name', value: role.name, inline: true },
-      { name: '🆔 ID', value: role.id, inline: true },
-      { name: '🎨 Color', value: role.hexColor, inline: true },
-      { name: '👥 Members Had', value: `${role.members.size}`, inline: true }
+      { name: '🎨 Color', value: role.hexColor, inline: true }
     ]
-  });
-
-  Utils.sendLog(role.guild, embed);
+  }));
 });
 
-// ==================== EVENT: ROLE UPDATE ====================
-client.on('roleUpdate', async (oldRole, newRole) => {
+client.on('roleUpdate', async (oldR, newR) => {
   const changes = [];
-
-  if (oldRole.name !== newRole.name) {
-    changes.push({ name: '🏷️ Name Changed', value: `${oldRole.name} → ${newRole.name}`, inline: false });
-  }
-
-  if (oldRole.hexColor !== newRole.hexColor) {
-    changes.push({ name: '🎨 Color Changed', value: `${oldRole.hexColor} → ${newRole.hexColor}`, inline: true });
-  }
-
-  if (oldRole.hoist !== newRole.hoist) {
-    changes.push({ name: '🔒 Hoisted', value: `${oldRole.hoist ? 'Yes' : 'No'} → ${newRole.hoist ? 'Yes' : 'No'}`, inline: true });
-  }
-
-  if (oldRole.mentionable !== newRole.mentionable) {
-    changes.push({ name: '📌 Mentionable', value: `${oldRole.mentionable ? 'Yes' : 'No'} → ${newRole.mentionable ? 'Yes' : 'No'}`, inline: true });
-  }
-
-  if (oldRole.position !== newRole.position) {
-    changes.push({ name: '📍 Position', value: `${oldRole.position} → ${newRole.position}`, inline: true });
-  }
-
-  // Check permission changes
-  const addedPerms = newRole.permissions.toArray().filter(p => !oldRole.permissions.has(p));
-  const removedPerms = oldRole.permissions.toArray().filter(p => !newRole.permissions.has(p));
-
-  if (addedPerms.length > 0) {
-    changes.push({ name: '➕ Permissions Added', value: addedPerms.join(', '), inline: false });
-  }
-
-  if (removedPerms.length > 0) {
-    changes.push({ name: '➖ Permissions Removed', value: removedPerms.join(', '), inline: false });
-  }
-
+  if (oldR.name !== newR.name) changes.push({ name: '🏷️ Name', value: `${oldR.name} → ${newR.name}`, inline: false });
+  if (oldR.hexColor !== newR.hexColor) changes.push({ name: '🎨 Color', value: `${oldR.hexColor} → ${newR.hexColor}`, inline: true });
   if (changes.length === 0) return;
 
-  const embed = Utils.embed({
+  Utils.sendLog(newR.guild, Utils.embed({
     title: '🎭 Role Updated',
     color: CONFIG.colors.info,
-    description: `Role: ${newRole}`,
+    description: `Role: ${newR}`,
     fields: changes
-  });
-
-  Utils.sendLog(newRole.guild, embed);
+  }));
 });
 
-// ==================== EVENT: MEMBER UPDATE (Roles & Nickname) ====================
-client.on('guildMemberUpdate', async (oldMember, newMember) => {
-  const oldRoles = oldMember.roles.cache;
-  const newRoles = newMember.roles.cache;
+client.on('guildMemberUpdate', async (oldM, newM) => {
+  const oldRoles = oldM.roles.cache;
+  const newRoles = newM.roles.cache;
+  const added = newRoles.filter(r => !oldRoles.has(r.id));
+  const removed = oldRoles.filter(r => !newRoles.has(r.id));
 
-  const addedRoles = newRoles.filter(role => !oldRoles.has(role.id));
-  const removedRoles = oldRoles.filter(role => !newRoles.has(role.id));
+  if (added.size > 0 || removed.size > 0) {
+    const fields = [{ name: '👤 User', value: newM.user.tag, inline: false }];
+    if (added.size > 0) fields.push({ name: '➕ Added', value: added.map(r => r.name).join(', '), inline: false });
+    if (removed.size > 0) fields.push({ name: '➖ Removed', value: removed.map(r => r.name).join(', '), inline: false });
 
-  if (addedRoles.size > 0 || removedRoles.size > 0) {
-    const fields = [
-      { name: '👤 User', value: `${newMember.user.tag} (${newMember.id})`, inline: false }
-    ];
-
-    if (addedRoles.size > 0) {
-      fields.push({
-        name: '➕ Roles Added',
-        value: addedRoles.map(r => `${r}`).join(', '),
-        inline: false
-      });
-    }
-
-    if (removedRoles.size > 0) {
-      fields.push({
-        name: '➖ Roles Removed',
-        value: removedRoles.map(r => `${r.name}`).join(', '),
-        inline: false
-      });
-    }
-
-    const embed = Utils.embed({
+    Utils.sendLog(newM.guild, Utils.embed({
       title: '🎭 Member Roles Updated',
       color: CONFIG.colors.info,
-      thumbnail: newMember.user.displayAvatarURL(),
+      thumbnail: newM.user.displayAvatarURL(),
       fields
-    });
-
-    Utils.sendLog(newMember.guild, embed);
+    }));
   }
 
-  // Nickname changes
-  if (oldMember.nickname !== newMember.nickname) {
-    const embed = Utils.embed({
+  if (oldM.nickname !== newM.nickname) {
+    Utils.sendLog(newM.guild, Utils.embed({
       title: '✏️ Nickname Changed',
       color: CONFIG.colors.info,
-      thumbnail: newMember.user.displayAvatarURL(),
       fields: [
-        { name: '👤 User', value: `${newMember.user.tag}`, inline: true },
-        { name: '📝 Old Nickname', value: oldMember.nickname || '*None*', inline: true },
-        { name: '📝 New Nickname', value: newMember.nickname || '*None*', inline: true }
+        { name: '👤 User', value: newM.user.tag, inline: true },
+        { name: '📝 Old', value: oldM.nickname || '*None*', inline: true },
+        { name: '📝 New', value: newM.nickname || '*None*', inline: true }
       ]
-    });
-
-    Utils.sendLog(newMember.guild, embed);
+    }));
   }
 });
 
-// ==================== EVENT: CHANNEL CREATE ====================
-client.on('channelCreate', async (channel) => {
-  if (!channel.guild) return;
-
-  const typeMap = {
-    [ChannelType.GuildText]: 'Text Channel',
-    [ChannelType.GuildVoice]: 'Voice Channel',
-    [ChannelType.GuildCategory]: 'Category',
-    [ChannelType.GuildAnnouncement]: 'Announcement Channel',
-    [ChannelType.GuildStageVoice]: 'Stage Channel',
-    [ChannelType.GuildForum]: 'Forum Channel'
-  };
-
-  const embed = Utils.embed({
-    title: '➕ Channel Created',
-    color: CONFIG.colors.success,
-    fields: [
-      { name: '📺 Channel', value: `${channel}`, inline: true },
-      { name: '🏷️ Name', value: channel.name, inline: true },
-      { name: '📋 Type', value: typeMap[channel.type] || 'Unknown', inline: true },
-      { name: '🆔 ID', value: channel.id, inline: true }
-    ]
-  });
-
-  Utils.sendLog(channel.guild, embed);
-});
-
-// ==================== EVENT: CHANNEL DELETE ====================
-client.on('channelDelete', async (channel) => {
-  if (!channel.guild) return;
-
-  const typeMap = {
-    [ChannelType.GuildText]: 'Text Channel',
-    [ChannelType.GuildVoice]: 'Voice Channel',
-    [ChannelType.GuildCategory]: 'Category',
-    [ChannelType.GuildAnnouncement]: 'Announcement Channel',
-    [ChannelType.GuildStageVoice]: 'Stage Channel',
-    [ChannelType.GuildForum]: 'Forum Channel'
-  };
-
-  const embed = Utils.embed({
-    title: '🗑️ Channel Deleted',
-    color: CONFIG.colors.error,
-    fields: [
-      { name: '🏷️ Name', value: channel.name, inline: true },
-      { name: '📋 Type', value: typeMap[channel.type] || 'Unknown', inline: true },
-      { name: '🆔 ID', value: channel.id, inline: true }
-    ]
-  });
-
-  Utils.sendLog(channel.guild, embed);
-});
-
-// ==================== EVENT: BAN ADD ====================
+// ==================== BAN EVENTS ====================
 client.on('guildBanAdd', async (ban) => {
-  const embed = Utils.embed({
+  Utils.sendLog(ban.guild, Utils.embed({
     title: '🔨 Member Banned',
     color: CONFIG.colors.error,
     thumbnail: ban.user.displayAvatarURL(),
     fields: [
-      { name: '👤 User', value: `${ban.user.tag}`, inline: true },
-      { name: '🆔 ID', value: ban.user.id, inline: true },
-      { name: '📋 Reason', value: ban.reason || 'No reason provided', inline: false }
+      { name: '👤 User', value: ban.user.tag, inline: true },
+      { name: '📋 Reason', value: ban.reason || 'No reason', inline: false }
     ]
-  });
-
-  Utils.sendLog(ban.guild, embed);
+  }));
 });
 
-// ==================== EVENT: BAN REMOVE ====================
 client.on('guildBanRemove', async (ban) => {
-  const embed = Utils.embed({
+  Utils.sendLog(ban.guild, Utils.embed({
     title: '🔓 Member Unbanned',
     color: CONFIG.colors.success,
-    thumbnail: ban.user.displayAvatarURL(),
-    fields: [
-      { name: '👤 User', value: `${ban.user.tag}`, inline: true },
-      { name: '🆔 ID', value: ban.user.id, inline: true }
-    ]
-  });
-
-  Utils.sendLog(ban.guild, embed);
+    fields: [{ name: '👤 User', value: ban.user.tag, inline: true }]
+  }));
 });
 
-// ==================== INTERACTION HANDLER ====================
-client.on('interactionCreate', async (interaction) => {
-  if (interaction.isButton()) {
-    return handleButton(interaction);
-  }
-
-  if (interaction.isChatInputCommand()) {
-    return handleSlashCommand(interaction);
-  }
+// ==================== INTERACTION ====================
+client.on('interactionCreate', async (itx) => {
+  if (itx.isButton()) return handleButton(itx);
+  if (itx.isStringSelectMenu()) return handleSelectMenu(itx);
+  if (itx.isChatInputCommand()) return handleCommand(itx);
 });
 
 // ==================== BUTTON HANDLER ====================
-async function handleButton(interaction) {
-  const [scope, action, extra] = interaction.customId.split(':');
+async function handleButton(itx) {
+  const [scope, action, ...args] = itx.customId.split(':');
 
-  // Verification button
+  // Verify button
   if (scope === 'verify' && action === 'click') {
-    const roleId = extra;
-    const role = interaction.guild.roles.cache.get(roleId);
-
-    if (!role) {
-      return interaction.reply({
-        ephemeral: true,
-        content: Utils.pad('❌ Verification role not found!')
-      });
+    const roleId = args[0];
+    const role = itx.guild.roles.cache.get(roleId);
+    if (!role) return itx.reply({ ephemeral: true, content: '❌ Role not found!' });
+    if (itx.member.roles.cache.has(roleId)) {
+      return itx.reply({ ephemeral: true, content: '✅ Already verified!' });
     }
-
-    if (interaction.member.roles.cache.has(roleId)) {
-      return interaction.reply({
-        ephemeral: true,
-        content: Utils.pad('✅ You are already verified!')
-      });
-    }
-
-    try {
-      await interaction.member.roles.add(role);
-
-      const embed = Utils.embed({
-        title: '✅ Verification Successful!',
-        description: `You have been verified and received the ${role} role!\n\nWelcome to **${interaction.guild.name}**!`,
-        color: CONFIG.colors.success,
-        thumbnail: interaction.user.displayAvatarURL()
-      });
-
-      await interaction.reply({ ephemeral: true, embeds: [embed] });
-
-      // Log
-      Utils.sendLog(interaction.guild, Utils.embed({
-        title: '✅ Member Verified',
-        color: CONFIG.colors.success,
-        fields: [
-          { name: '👤 User', value: `${interaction.user.tag}`, inline: true },
-          { name: '🎭 Role', value: `${role}`, inline: true },
-          { name: '🕒 Time', value: `<t:${Utils.timestamp()}:R>`, inline: true }
-        ]
-      }));
-
-    } catch (error) {
-      console.error('Verification error:', error);
-      return interaction.reply({
-        ephemeral: true,
-        content: Utils.pad('❌ Failed to verify. Please contact an administrator.')
-      });
-    }
-
+    await itx.member.roles.add(role);
+    itx.reply({
+      ephemeral: true,
+      embeds: [Utils.embed({
+        title: '✅ Verified!',
+        description: `You received ${role}!\nWelcome to **${itx.guild.name}**!`,
+        color: CONFIG.colors.success
+      })]
+    });
+    Utils.sendLog(itx.guild, Utils.embed({
+      title: '✅ Member Verified',
+      color: CONFIG.colors.success,
+      fields: [
+        { name: '👤 User', value: itx.user.tag, inline: true },
+        { name: '🎭 Role', value: `${role}`, inline: true }
+      ]
+    }));
     return;
   }
 
-  // Announcement buttons
-  if (scope === 'announce') {
-    if (action === 'ack') {
-      return interaction.reply({
-        ephemeral: true,
-        content: Utils.pad('✅ Acknowledged. Stay informed.')
-      });
+  // Poll vote
+  if (scope === 'poll' && action === 'vote') {
+    const msgId = args[0];
+    const optionIndex = parseInt(args[1]);
+    const poll = activePolls.get(msgId);
+    if (!poll) return itx.reply({ ephemeral: true, content: '❌ Poll not found!' });
+
+    // Check if already voted
+    const hasVoted = poll.votes.some(v => v.userId === itx.user.id);
+    if (hasVoted) {
+      // Remove old vote
+      poll.votes = poll.votes.filter(v => v.userId !== itx.user.id);
     }
 
-    if (action === 'clear') {
-      if (!Utils.hasPermission(interaction.member, PermissionFlagsBits.ManageGuild)) {
-        return interaction.reply({
-          ephemeral: true,
-          content: Utils.pad('❌ You lack the authority to do this.')
-        });
-      }
+    // Add new vote
+    poll.votes.push({ userId: itx.user.id, option: optionIndex });
+    activePolls.set(msgId, poll);
 
-      await interaction.message.edit({ components: [] });
-      return interaction.reply({
-        ephemeral: true,
-        content: Utils.pad('🧹 Buttons removed.')
-      });
+    // Update embed
+    const results = {};
+    poll.options.forEach((_, i) => results[i] = 0);
+    poll.votes.forEach(v => results[v.option]++);
+
+    const fields = poll.options.map((opt, i) => {
+      const count = results[i] || 0;
+      const percent = poll.votes.length > 0 ? Math.round((count / poll.votes.length) * 100) : 0;
+      const bar = '█'.repeat(Math.floor(percent / 5)) + '░'.repeat(20 - Math.floor(percent / 5));
+      return {
+        name: `${i + 1}. ${opt}`,
+        value: `${bar} ${count} votes (${percent}%)`,
+        inline: false
+      };
+    });
+
+    const embed = Utils.embed({
+      title: `📊 ${poll.question}`,
+      description: `Total votes: **${poll.votes.length}**${poll.endsAt ? `\nEnds: <t:${Utils.timestamp(poll.endsAt)}:R>` : ''}`,
+      fields,
+      color: CONFIG.colors.brand
+    });
+
+    await itx.update({ embeds: [embed] });
+    return;
+  }
+
+  // Reaction role button
+  if (scope === 'rr' && action === 'toggle') {
+    const roleId = args[0];
+    const role = itx.guild.roles.cache.get(roleId);
+    if (!role) return itx.reply({ ephemeral: true, content: '❌ Role not found!' });
+
+    const has = itx.member.roles.cache.has(roleId);
+    if (has) {
+      await itx.member.roles.remove(role);
+      return itx.reply({ ephemeral: true, content: `✅ Removed ${role}!` });
+    } else {
+      await itx.member.roles.add(role);
+      return itx.reply({ ephemeral: true, content: `✅ Added ${role}!` });
     }
   }
 
-  // Ticket buttons
-  if (scope === 'ticket' && action === 'close') {
-    const canClose = 
-      Utils.hasPermission(interaction.member, PermissionFlagsBits.ManageChannels) ||
-      (CONFIG.supportRoleId && interaction.member.roles.cache.has(CONFIG.supportRoleId)) ||
-      interaction.customId.endsWith(interaction.user.id);
-
-    if (!canClose) {
-      return interaction.reply({
-        ephemeral: true,
-        content: Utils.pad('❌ You cannot close this ticket.')
-      });
+  // Announce buttons
+  if (scope === 'announce') {
+    if (action === 'ack') {
+      return itx.reply({ ephemeral: true, content: '✅ Acknowledged!' });
     }
+    if (action === 'clear') {
+      if (!Utils.hasPermission(itx.member, PermissionFlagsBits.ManageGuild)) {
+        return itx.reply({ ephemeral: true, content: '❌ No permission!' });
+      }
+      await itx.message.edit({ components: [] });
+      return itx.reply({ ephemeral: true, content: '🧹 Buttons removed.' });
+    }
+  }
 
-    await interaction.reply({
-      ephemeral: true,
-      content: Utils.pad('🗑️ Closing ticket...')
-    });
+  // Ticket close
+  if (scope === 'ticket' && action === 'close') {
+    const cfg = Utils.getConfig(itx.guild.id);
+    const canClose = 
+      Utils.isMod(itx.member) ||
+      (cfg.supportRole && itx.member.roles.cache.has(cfg.supportRole)) ||
+      args[0] === itx.user.id;
 
-    const logEmbed = Utils.embed({
+    if (!canClose) return itx.reply({ ephemeral: true, content: '❌ Cannot close this ticket!' });
+
+    await itx.reply({ content: '🗑️ Closing in 3 seconds...' });
+    Utils.sendLog(itx.guild, Utils.embed({
       title: '🎟️ Ticket Closed',
       color: CONFIG.colors.error,
       fields: [
-        { name: '👤 Closed By', value: `${interaction.user.tag}`, inline: true },
-        { name: '📍 Channel', value: `${interaction.channel.name}`, inline: true }
+        { name: '👤 By', value: itx.user.tag, inline: true },
+        { name: '📍 Channel', value: itx.channel.name, inline: true }
       ]
-    });
+    }));
 
-    Utils.sendLog(interaction.guild, logEmbed);
+    for (const [uid, cid] of activeTickets) {
+      if (cid === itx.channel.id) activeTickets.delete(uid);
+    }
 
-    setTimeout(() => {
-      interaction.channel.delete().catch(() => {});
-    }, 3000);
+    setTimeout(() => itx.channel.delete().catch(() => {}), 3000);
   }
 }
 
-// ==================== SLASH COMMAND HANDLER ====================
-async function handleSlashCommand(interaction) {
-  const { commandName } = interaction;
+// ==================== SELECT MENU HANDLER ====================
+async function handleSelectMenu(itx) {
+  const [scope] = itx.customId.split(':');
 
-  try {
-    switch (commandName) {
-      case 'help':
-        await handleHelpCommand(interaction);
-        break;
-      case 'level':
-        await handleLevelCommand(interaction);
-        break;
-      case 'leaderboard':
-        await handleLeaderboardCommand(interaction);
-        break;
-      case 'say':
-        await handleSayCommand(interaction);
-        break;
-      case 'announce':
-        await handleAnnounceCommand(interaction);
-        break;
-      case 'ticket':
-        await handleTicketCommand(interaction);
-        break;
-      case 'stats':
-        await handleStatsCommand(interaction);
-        break;
-      case 'verify':
-        await handleVerifyCommand(interaction);
-        break;
-      default:
-        await interaction.reply({
-          ephemeral: true,
-          content: Utils.pad('❌ Unknown command.')
-        });
-    }
-  } catch (error) {
-    console.error(`Error handling /${commandName}:`, error);
+  if (scope === 'rr') {
+    const roleIds = itx.values;
+    const added = [];
+    const removed = [];
 
-    const errorMessage = {
-      ephemeral: true,
-      content: Utils.pad('❌ An error occurred while processing your command.')
-    };
+    // Get all roles from this panel
+    const panel = reactionRolePanels.get(itx.message.id);
+    if (!panel) return itx.reply({ ephemeral: true, content: '❌ Panel not found!' });
 
-    if (interaction.deferred || interaction.replied) {
-      await interaction.followUp(errorMessage);
-    } else {
-      await interaction.reply(errorMessage);
-    }
-  }
-}
-
-// ==================== COMMAND: /help ====================
-async function handleHelpCommand(interaction) {
-  const embed = Utils.embed({
-    title: '🗡️ Xaver — Command Guide',
-    description: 'Here are the commands at your disposal:',
-    fields: [
-      {
-        name: '📊 Leveling System',
-        value: '`/level [user]` — View level and XP\n`/leaderboard` — Top members',
-        inline: false
-      },
-      {
-        name: '🎟️ Support System',
-        value: '`/ticket create` — Open a support ticket\n`/ticket close` — Close current ticket',
-        inline: false
-      },
-      {
-        name: '✅ Verification System',
-        value: '`/verify` — Setup verification system (Admin)',
-        inline: false
-      },
-      {
-        name: '📣 Announcements',
-        value: '`/announce` — Create professional announcements\n`/say` — Send messages as the bot',
-        inline: false
-      },
-      {
-        name: '📈 Bot Information',
-        value: '`/stats` — View bot statistics',
-        inline: false
+    // Remove all panel roles first
+    for (const rid of panel.roles) {
+      if (itx.member.roles.cache.has(rid) && !roleIds.includes(rid)) {
+        await itx.member.roles.remove(rid);
+        const role = itx.guild.roles.cache.get(rid);
+        if (role) removed.push(role.name);
       }
-    ],
-    footer: true
-  });
+    }
 
-  await interaction.reply({ ephemeral: true, embeds: [embed] });
-}
+    // Add selected roles
+    for (const rid of roleIds) {
+      if (!itx.member.roles.cache.has(rid)) {
+        await itx.member.roles.add(rid);
+        const role = itx.guild.roles.cache.get(rid);
+        if (role) added.push(role.name);
+      }
+    }
 
-// ==================== COMMAND: /verify ====================
-async function handleVerifyCommand(interaction) {
-  if (!Utils.hasPermission(interaction.member, PermissionFlagsBits.ManageGuild)) {
-    return interaction.reply({
-      ephemeral: true,
-      content: Utils.pad('❌ Insufficient permissions.')
-    });
+    let response = '';
+    if (added.length > 0) response += `✅ Added: ${added.join(', ')}\n`;
+    if (removed.length > 0) response += `➖ Removed: ${removed.join(', ')}`;
+    if (!response) response = '✅ Roles updated!';
+
+    return itx.reply({ ephemeral: true, content: response });
   }
+}
 
-  const role = interaction.options.getRole('role', true);
-  const channel = interaction.options.getChannel('channel') || interaction.channel;
+// ==================== COMMAND HANDLER ====================
+async function handleCommand(itx) {
+  try {
+    const { commandName } = itx;
 
-  if (!channel.isTextBased()) {
-    return interaction.reply({
-      ephemeral: true,
-      content: Utils.pad('❌ Invalid channel type.')
-    });
+    switch (commandName) {
+      case 'help': return await cmdHelp(itx);
+      case 'level': return await cmdLevel(itx);
+      case 'leaderboard': return await cmdLeaderboard(itx);
+      case 'config': return await cmdConfig(itx);
+      case 'warn': return await cmdWarn(itx);
+      case 'strikes': return await cmdStrikes(itx);
+      case 'pardon': return await cmdPardon(itx);
+      case 'afk': return await cmdAFK(itx);
+      case 'poll': return await cmdPoll(itx);
+      case 'roles': return await cmdRoles(itx);
+      case 'say': return await cmdSay(itx);
+      case 'announce': return await cmdAnnounce(itx);
+      case 'ticket': return await cmdTicket(itx);
+      case 'verify': return await cmdVerify(itx);
+      case 'stats': return await cmdStats(itx);
+      default: return await itx.reply({ ephemeral: true, content: '❌ Unknown command!' });
+    }
+  } catch (e) {
+    console.error('Command error:', e);
+    const msg = { ephemeral: true, content: '❌ An error occurred!' };
+    if (itx.deferred || itx.replied) await itx.followUp(msg);
+    else await itx.reply(msg);
   }
-
-  const verifyButton = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`verify:click:${role.id}`)
-      .setLabel('Verify')
-      .setStyle(ButtonStyle.Success)
-      .setEmoji('✅')
-  );
-
-  const embed = Utils.embed({
-    title: '✅ Server Verification',
-    description: `Welcome to **${interaction.guild.name}**!\n\nTo gain access to the server, please click the button below to verify yourself.\n\nYou will receive the ${role} role.`,
-    color: CONFIG.colors.brand,
-    thumbnail: interaction.guild.iconURL({ size: 256 }),
-    fields: [
-      { name: '📋 Instructions', value: '1. Read the server rules\n2. Click the Verify button\n3. Enjoy the server!', inline: false }
-    ]
-  });
-
-  await channel.send({
-    embeds: [embed],
-    components: [verifyButton]
-  });
-
-  await interaction.reply({
-    ephemeral: true,
-    content: Utils.pad(`✅ Verification system setup in ${channel}!`)
-  });
-
-  Utils.sendLog(interaction.guild, Utils.embed({
-    title: '✅ Verification System Setup',
-    color: CONFIG.colors.success,
-    fields: [
-      { name: '👤 Setup By', value: interaction.user.tag, inline: true },
-      { name: '📍 Channel', value: `${channel}`, inline: true },
-      { name: '🎭 Role', value: `${role}`, inline: true }
-    ]
-  }));
 }
 
-// ==================== COMMAND: /level ====================
-async function handleLevelCommand(interaction) {
-  const targetUser = interaction.options.getUser('user') || interaction.user;
-  const key = Utils.userKey(interaction.guild.id, targetUser.id);
-  const stats = userStats.get(key) || { xp: 0, level: 0, messageCount: 0 };
+// ==================== COMMANDS ====================
 
-  const nextLevelXP = Utils.xpForLevel(stats.level);
-  const progress = Math.round((stats.xp / nextLevelXP) * 100);
-
+async function cmdHelp(itx) {
   const embed = Utils.embed({
-    title: '📊 Level Statistics',
-    thumbnail: targetUser.displayAvatarURL(),
+    title: '🔥 Xaver v5.0 MEGA Edition',
+    description: 'Phase 1 Features are here!',
     fields: [
-      { name: '👤 User', value: targetUser.username, inline: true },
-      { name: '⭐ Level', value: `${stats.level}`, inline: true },
-      { name: '💬 Messages', value: `${stats.messageCount}`, inline: true },
-      { name: '✨ Current XP', value: `${stats.xp}`, inline: true },
-      { name: '🎯 Next Level', value: `${nextLevelXP} XP`, inline: true },
-      { name: '📈 Progress', value: `${progress}%`, inline: true }
+      {
+        name: '📊 Leveling',
+        value: '`/level` `/leaderboard`',
+        inline: true
+      },
+      {
+        name: '⚙️ Config (Admin)',
+        value: '`/config show` `/config set`',
+        inline: true
+      },
+      {
+        name: '🛡️ Moderation (Mod)',
+        value: '`/warn` `/strikes` `/pardon`',
+        inline: true
+      },
+      {
+        name: '💤 AFK',
+        value: '`/afk [reason]`',
+        inline: true
+      },
+      {
+        name: '📊 Polls (Admin)',
+        value: '`/poll`',
+        inline: true
+      },
+      {
+        name: '🎭 Reaction Roles (Admin)',
+        value: '`/roles panel`',
+        inline: true
+      },
+      {
+        name: '⭐ Starboard',
+        value: 'React with ⭐ (auto)',
+        inline: true
+      },
+      {
+        name: '📣 Announcements (Admin)',
+        value: '`/say` `/announce`',
+        inline: true
+      },
+      {
+        name: '🎟️ Tickets',
+        value: '`/ticket create` `/ticket close`',
+        inline: true
+      },
+      {
+        name: '✅ Verification (Admin)',
+        value: '`/verify`',
+        inline: true
+      },
+      {
+        name: '📈 Bot Stats',
+        value: '`/stats`',
+        inline: true
+      }
     ]
   });
-
-  await interaction.reply({ embeds: [embed] });
+  await itx.reply({ ephemeral: true, embeds: [embed] });
 }
 
-// ==================== COMMAND: /leaderboard ====================
-async function handleLeaderboardCommand(interaction) {
-  const guildStats = [];
+async function cmdLevel(itx) {
+  const user = itx.options.getUser('user') || itx.user;
+  const key = Utils.userKey(itx.guild.id, user.id);
+  const s = userStats.get(key) || { xp: 0, level: 0, messages: 0 };
+  const next = Utils.xpForLevel(s.level);
+  const progress = Math.round((s.xp / next) * 100);
 
+  await itx.reply({
+    embeds: [Utils.embed({
+      title: '📊 Level Stats',
+      thumbnail: user.displayAvatarURL(),
+      fields: [
+        { name: '👤 User', value: user.username, inline: true },
+        { name: '⭐ Level', value: `${s.level}`, inline: true },
+        { name: '💬 Messages', value: `${s.messages}`, inline: true },
+        { name: '✨ XP', value: `${s.xp}/${next}`, inline: true },
+        { name: '📈 Progress', value: `${progress}%`, inline: true }
+      ]
+    })]
+  });
+}
+
+async function cmdLeaderboard(itx) {
+  const list = [];
   for (const [key, data] of userStats) {
-    const [guildId, userId] = key.split(':');
-    if (guildId !== interaction.guild.id) continue;
-    guildStats.push({ userId, ...data });
+    const [gid, uid] = key.split(':');
+    if (gid !== itx.guild.id) continue;
+    list.push({ uid, ...data });
   }
+  list.sort((a, b) => (b.level - a.level) || (b.xp - a.xp));
+  const top = list.slice(0, 10);
 
-  guildStats.sort((a, b) => {
-    if (b.level !== a.level) return b.level - a.level;
-    return b.xp - a.xp;
-  });
-
-  const top10 = guildStats.slice(0, 10);
-
-  if (top10.length === 0) {
-    return interaction.reply({
+  if (top.length === 0) {
+    return itx.reply({
       embeds: [Utils.embed({
         title: '🏆 Leaderboard',
-        description: 'No activity recorded yet. Start chatting to earn XP!',
+        description: 'No activity yet!',
         color: CONFIG.colors.warning
       })]
     });
   }
 
-  const description = top10.map((entry, index) => {
-    const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `**#${index + 1}**`;
-    return `${medal} <@${entry.userId}> — Level ${entry.level} (${entry.xp} XP)`;
+  const desc = top.map((e, i) => {
+    const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `**#${i + 1}**`;
+    return `${medal} <@${e.uid}> — Lvl ${e.level} (${e.xp} XP)`;
   }).join('\n');
 
-  const embed = Utils.embed({
-    title: '🏆 Server Leaderboard',
-    description,
-    footer: true
+  await itx.reply({
+    embeds: [Utils.embed({ title: '🏆 Leaderboard', description: desc })]
   });
-
-  await interaction.reply({ embeds: [embed] });
 }
 
-// ==================== COMMAND: /say ====================
-async function handleSayCommand(interaction) {
-  if (!Utils.hasPermission(interaction.member, PermissionFlagsBits.ManageGuild)) {
-    return interaction.reply({
+async function cmdConfig(itx) {
+  if (!Utils.hasPermission(itx.member, PermissionFlagsBits.ManageGuild)) {
+    return itx.reply({ ephemeral: true, content: '❌ Admin only!' });
+  }
+
+  const sub = itx.options.getSubcommand();
+  const cfg = Utils.getConfig(itx.guild.id);
+
+  if (sub === 'show') {
+    const fields = [
+      { name: '📝 Log Channel', value: cfg.logChannel ? `<#${cfg.logChannel}>` : '*Not set*', inline: true },
+      { name: '👋 Welcome Channel', value: cfg.welcomeChannel ? `<#${cfg.welcomeChannel}>` : '*Not set*', inline: true },
+      { name: '⭐ Starboard Channel', value: cfg.starboardChannel ? `<#${cfg.starboardChannel}>` : '*Not set*', inline: true },
+      { name: '✅ Verify Role', value: cfg.verifyRole ? `<@&${cfg.verifyRole}>` : '*Not set*', inline: true },
+      { name: '🛡️ Support Role', value: cfg.supportRole ? `<@&${cfg.supportRole}>` : '*Not set*', inline: true },
+      { name: '🎟️ Ticket Category', value: cfg.ticketCategory ? `<#${cfg.ticketCategory}>` : '*Not set*', inline: true },
+      { name: '⭐ Starboard Emoji', value: cfg.starboardEmoji, inline: true },
+      { name: '⭐ Threshold', value: `${cfg.starboardThreshold}`, inline: true },
+      { name: '🔨 Auto Kick', value: `${cfg.autoStrikeKick} strikes`, inline: true },
+      { name: '🔨 Auto Ban', value: `${cfg.autoStrikeBan} strikes`, inline: true }
+    ];
+    return itx.reply({
       ephemeral: true,
-      content: Utils.pad('❌ Insufficient permissions.')
+      embeds: [Utils.embed({ title: '⚙️ Server Config', fields })]
     });
   }
 
-  const text = interaction.options.getString('text', true);
-  const targetChannel = interaction.options.getChannel('channel') || interaction.channel;
+  if (sub === 'set') {
+    const key = itx.options.getString('key', true);
+    const val = itx.options.getString('value', true);
 
-  if (!targetChannel.isTextBased()) {
-    return interaction.reply({
+    // Parse value
+    let parsed = val;
+    if (val.match(/^<#(\d+)>$/)) parsed = val.match(/^<#(\d+)>$/)[1];
+    else if (val.match(/^<@&(\d+)>$/)) parsed = val.match(/^<@&(\d+)>$/)[1];
+    else if (val.match(/^\d+$/)) parsed = parseInt(val);
+
+    cfg[key] = parsed;
+    guildConfigs.set(itx.guild.id, cfg);
+
+    return itx.reply({
       ephemeral: true,
-      content: Utils.pad('❌ Invalid channel type.')
+      content: `✅ Set **${key}** to **${val}**`
     });
   }
+}
 
-  const embed = Utils.embed({
-    title: '📣 Announcement',
-    description: text,
-    author: {
-      name: interaction.user.tag,
-      iconURL: interaction.user.displayAvatarURL()
-    }
+async function cmdWarn(itx) {
+  if (!Utils.isMod(itx.member)) {
+    return itx.reply({ ephemeral: true, content: '❌ Moderator only!' });
+  }
+
+  const user = itx.options.getUser('user', true);
+  const reason = itx.options.getString('reason', true);
+  const member = await itx.guild.members.fetch(user.id).catch(() => null);
+
+  if (!member) {
+    return itx.reply({ ephemeral: true, content: '❌ User not in server!' });
+  }
+
+  if (member.id === itx.user.id) {
+    return itx.reply({ ephemeral: true, content: '❌ Cannot warn yourself!' });
+  }
+
+  if (member.id === client.user.id) {
+    return itx.reply({ ephemeral: true, content: '❌ Cannot warn me!' });
+  }
+
+  const result = WarnSystem.add(itx.guild.id, user.id, reason, itx.user.id, itx.user.tag);
+  const cfg = Utils.getConfig(itx.guild.id);
+
+  // DM user
+  try {
+    await user.send({
+      embeds: [Utils.embed({
+        title: '⚠️ You have been warned',
+        color: CONFIG.colors.warning,
+        fields: [
+          { name: '🏰 Server', value: itx.guild.name, inline: true },
+          { name: '👮 Moderator', value: itx.user.tag, inline: true },
+          { name: '📋 Reason', value: reason, inline: false },
+          { name: '📊 Total Warns', value: `${result.total}`, inline: true }
+        ]
+      })]
+    });
+  } catch {}
+
+  await itx.reply({
+    embeds: [Utils.embed({
+      title: '⚠️ User Warned',
+      color: CONFIG.colors.warning,
+      fields: [
+        { name: '👤 User', value: `${user.tag}`, inline: true },
+        { name: '📊 Total Warns', value: `${result.total}`, inline: true },
+        { name: '📋 Reason', value: reason, inline: false }
+      ]
+    })]
   });
 
-  await targetChannel.send({ embeds: [embed] });
-  await interaction.reply({
-    ephemeral: true,
-    content: Utils.pad(`✅ Message sent to ${targetChannel}`)
-  });
-
-  Utils.sendLog(interaction.guild, Utils.embed({
-    title: '📣 /say Command Used',
-    color: CONFIG.colors.info,
+  Utils.sendLog(itx.guild, Utils.embed({
+    title: '⚠️ Warn Issued',
+    color: CONFIG.colors.warning,
     fields: [
-      { name: '👤 User', value: interaction.user.tag, inline: true },
-      { name: '📍 Channel', value: `${targetChannel}`, inline: true }
+      { name: '👤 User', value: user.tag, inline: true },
+      { name: '👮 Moderator', value: itx.user.tag, inline: true },
+      { name: '📊 Total', value: `${result.total}`, inline: true },
+      { name: '📋 Reason', value: reason, inline: false }
+    ]
+  }));
+
+  // Auto punish
+  if (cfg.autoStrikeKick && result.total >= cfg.autoStrikeKick && result.total < cfg.autoStrikeBan) {
+    try {
+      await member.kick(`Auto-kick: ${result.total} warnings`);
+      itx.followUp({ content: `🔨 **${user.tag}** auto-kicked (${result.total} warns)` });
+    } catch {}
+  } else if (cfg.autoStrikeBan && result.total >= cfg.autoStrikeBan) {
+    try {
+      await member.ban({ reason: `Auto-ban: ${result.total} warnings` });
+      itx.followUp({ content: `🔨 **${user.tag}** auto-banned (${result.total} warns)` });
+    } catch {}
+  }
+}
+
+async function cmdStrikes(itx) {
+  if (!Utils.isMod(itx.member)) {
+    return itx.reply({ ephemeral: true, content: '❌ Moderator only!' });
+  }
+
+  const user = itx.options.getUser('user', true);
+  const list = WarnSystem.get(itx.guild.id, user.id);
+
+  if (list.length === 0) {
+    return itx.reply({
+      ephemeral: true,
+      content: `✅ **${user.tag}** has no warnings!`
+    });
+  }
+
+  const fields = list.map((w, i) => ({
+    name: `Warning #${i + 1} (ID: ${w.id})`,
+    value: `**Reason:** ${w.reason}\n**By:** ${w.moderator}\n**Date:** <t:${Utils.timestamp(w.date)}:R>`,
+    inline: false
+  }));
+
+  await itx.reply({
+    ephemeral: true,
+    embeds: [Utils.embed({
+      title: `⚠️ Warnings for ${user.tag}`,
+      description: `Total: **${list.length}**`,
+      fields,
+      color: CONFIG.colors.warning
+    })]
+  });
+}
+
+async function cmdPardon(itx) {
+  if (!Utils.isMod(itx.member)) {
+    return itx.reply({ ephemeral: true, content: '❌ Moderator only!' });
+  }
+
+  const user = itx.options.getUser('user', true);
+  const warnId = itx.options.getString('warn_id');
+
+  if (warnId) {
+    const removed = WarnSystem.remove(itx.guild.id, user.id, warnId);
+    if (!removed) {
+      return itx.reply({ ephemeral: true, content: '❌ Warn ID not found!' });
+    }
+    await itx.reply({
+      content: `✅ Removed warning **${warnId}** from **${user.tag}**`
+    });
+  } else {
+    const count = WarnSystem.clear(itx.guild.id, user.id);
+    if (count === 0) {
+      return itx.reply({ ephemeral: true, content: '❌ User has no warnings!' });
+    }
+    await itx.reply({
+      content: `✅ Cleared **${count}** warning(s) from **${user.tag}**`
+    });
+  }
+
+  Utils.sendLog(itx.guild, Utils.embed({
+    title: '✅ Warnings Pardoned',
+    color: CONFIG.colors.success,
+    fields: [
+      { name: '👤 User', value: user.tag, inline: true },
+      { name: '👮 By', value: itx.user.tag, inline: true },
+      { name: '📋 Action', value: warnId ? `Removed ID: ${warnId}` : 'Cleared all', inline: true }
     ]
   }));
 }
 
-// ==================== COMMAND: /announce ====================
-async function handleAnnounceCommand(interaction) {
-  if (!Utils.hasPermission(interaction.member, PermissionFlagsBits.ManageGuild)) {
-    return interaction.reply({
-      ephemeral: true,
-      content: Utils.pad('❌ Insufficient permissions.')
-    });
+async function cmdAFK(itx) {
+  const reason = itx.options.getString('reason') || 'AFK';
+  afkUsers.set(itx.user.id, { reason, since: new Date() });
+  await itx.reply({
+    content: `💤 You are now AFK: **${reason}**`
+  });
+}
+
+async function cmdPoll(itx) {
+  if (!Utils.hasPermission(itx.member, PermissionFlagsBits.ManageGuild)) {
+    return itx.reply({ ephemeral: true, content: '❌ Admin only!' });
   }
 
-  const title = interaction.options.getString('title', true);
-  const message = interaction.options.getString('message', true);
-  const targetChannel = interaction.options.getChannel('channel') || interaction.channel;
-  const pingType = interaction.options.getString('ping') || 'none';
-  const role = interaction.options.getRole('role');
+  const question = itx.options.getString('question', true);
+  const optionsStr = itx.options.getString('options', true);
+  const duration = itx.options.getInteger('duration');
 
-  let pingContent = '';
-  if (pingType === 'everyone') pingContent = '@everyone';
-  else if (pingType === 'here') pingContent = '@here';
-  else if (pingType === 'role' && role) pingContent = `<@&${role.id}>`;
+  const options = optionsStr.split(';').map(o => o.trim()).filter(o => o);
+  if (options.length < 2) {
+    return itx.reply({ ephemeral: true, content: '❌ Need at least 2 options!' });
+  }
+  if (options.length > 10) {
+    return itx.reply({ ephemeral: true, content: '❌ Max 10 options!' });
+  }
+
+  const endsAt = duration ? new Date(Date.now() + duration * 60000) : null;
+
+  const buttons = options.slice(0, 5).map((opt, i) => 
+    new ButtonBuilder()
+      .setCustomId(`poll:vote:${itx.id}:${i}`)
+      .setLabel(`${i + 1}`)
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  const row = new ActionRowBuilder().addComponents(buttons);
+
+  const fields = options.map((opt, i) => ({
+    name: `${i + 1}. ${opt}`,
+    value: `${'░'.repeat(20)} 0 votes (0%)`,
+    inline: false
+  }));
 
   const embed = Utils.embed({
-    title: `📣 ${title}`,
-    description: message,
-    author: {
-      name: interaction.user.tag,
-      iconURL: interaction.user.displayAvatarURL()
-    }
+    title: `📊 ${question}`,
+    description: `Total votes: **0**${endsAt ? `\nEnds: <t:${Utils.timestamp(endsAt)}:R>` : ''}`,
+    fields,
+    color: CONFIG.colors.brand
   });
+
+  const msg = await itx.reply({ embeds: [embed], components: [row], fetchReply: true });
+
+  activePolls.set(msg.id, {
+    question,
+    options,
+    votes: [],
+    endsAt,
+    createdBy: itx.user.id
+  });
+
+  if (endsAt) {
+    setTimeout(() => {
+      msg.edit({ components: [] }).catch(() => {});
+      activePolls.delete(msg.id);
+    }, duration * 60000);
+  }
+}
+
+async function cmdRoles(itx) {
+  if (!Utils.hasPermission(itx.member, PermissionFlagsBits.ManageGuild)) {
+    return itx.reply({ ephemeral: true, content: '❌ Admin only!' });
+  }
+
+  const sub = itx.options.getSubcommand();
+
+  if (sub === 'panel') {
+    const title = itx.options.getString('title', true);
+    const description = itx.options.getString('description') || 'Select your roles below:';
+    const type = itx.options.getString('type', true);
+
+    await itx.reply({
+      ephemeral: true,
+      content: '✅ Panel created! Now use `/roles add` to add roles. (Just kidding, for now manually mention roles separated by space in next message)'
+    });
+
+    // For now, simple demo with manual role IDs
+    // In real: you'd have a follow-up system
+    const embed = Utils.embed({
+      title: `🎭 ${title}`,
+      description,
+      color: CONFIG.colors.brand
+    });
+
+    const msg = await itx.channel.send({
+      embeds: [embed],
+      content: '⚠️ Use reaction or setup roles via buttons/dropdown (demo mode)'
+    });
+
+    reactionRolePanels.set(msg.id, {
+      title,
+      type,
+      roles: [] // add roles here
+    });
+  }
+}
+
+async function cmdSay(itx) {
+  if (!Utils.hasPermission(itx.member, PermissionFlagsBits.ManageGuild)) {
+    return itx.reply({ ephemeral: true, content: '❌ Admin only!' });
+  }
+
+  const text = itx.options.getString('text', true);
+  const ch = itx.options.getChannel('channel') || itx.channel;
+
+  if (!ch.isTextBased()) {
+    return itx.reply({ ephemeral: true, content: '❌ Invalid channel!' });
+  }
+
+  await ch.send({
+    embeds: [Utils.embed({
+      title: '📣 Announcement',
+      description: text,
+      author: { name: itx.user.tag, iconURL: itx.user.displayAvatarURL() }
+    })]
+  });
+
+  await itx.reply({ ephemeral: true, content: `✅ Sent to ${ch}` });
+  Utils.sendLog(itx.guild, Utils.embed({
+    title: '📣 /say used',
+    fields: [
+      { name: '👤 By', value: itx.user.tag, inline: true },
+      { name: '📍 Channel', value: `${ch}`, inline: true }
+    ]
+  }));
+}
+
+async function cmdAnnounce(itx) {
+  if (!Utils.hasPermission(itx.member, PermissionFlagsBits.ManageGuild)) {
+    return itx.reply({ ephemeral: true, content: '❌ Admin only!' });
+  }
+
+  const title = itx.options.getString('title', true);
+  const message = itx.options.getString('message', true);
+  const ch = itx.options.getChannel('channel') || itx.channel;
+  const ping = itx.options.getString('ping') || 'none';
+  const role = itx.options.getRole('role');
+
+  let pingContent = '';
+  if (ping === 'everyone') pingContent = '@everyone';
+  else if (ping === 'here') pingContent = '@here';
+  else if (ping === 'role' && role) pingContent = `<@&${role.id}>`;
 
   const buttons = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -1180,78 +1541,64 @@ async function handleAnnounceCommand(interaction) {
       .setEmoji('🧹')
   );
 
-  await targetChannel.send({
+  await ch.send({
     content: pingContent || undefined,
-    embeds: [embed],
+    embeds: [Utils.embed({
+      title: `📣 ${title}`,
+      description: message,
+      author: { name: itx.user.tag, iconURL: itx.user.displayAvatarURL() }
+    })],
     components: [buttons]
   });
 
-  await interaction.reply({
-    ephemeral: true,
-    content: Utils.pad(`✅ Announcement sent to ${targetChannel}`)
-  });
-
-  Utils.sendLog(interaction.guild, Utils.embed({
+  await itx.reply({ ephemeral: true, content: `✅ Announcement sent to ${ch}` });
+  Utils.sendLog(itx.guild, Utils.embed({
     title: '📣 Announcement Created',
     color: CONFIG.colors.info,
     fields: [
-      { name: '👤 Created By', value: interaction.user.tag, inline: true },
-      { name: '📍 Channel', value: `${targetChannel}`, inline: true },
+      { name: '👤 By', value: itx.user.tag, inline: true },
+      { name: '📍 Channel', value: `${ch}`, inline: true },
       { name: '📢 Ping', value: pingContent || 'None', inline: true }
     ]
   }));
 }
 
-// ==================== COMMAND: /ticket ====================
-async function handleTicketCommand(interaction) {
-  // Admin check
-  if (!Utils.hasPermission(interaction.member, PermissionFlagsBits.ManageGuild)) {
-    return interaction.reply({
-      ephemeral: true,
-      content: Utils.pad('❌ Only administrators can use this command.')
-    });
-  }
+async function cmdTicket(itx) {
+  const sub = itx.options.getSubcommand();
+  const cfg = Utils.getConfig(itx.guild.id);
 
-  const subcommand = interaction.options.getSubcommand();
-
-  if (subcommand === 'create') {
-    const existingTicket = activeTickets.get(interaction.user.id);
-    if (existingTicket) {
-      return interaction.reply({
+  if (sub === 'create') {
+    if (activeTickets.has(itx.user.id)) {
+      const existingId = activeTickets.get(itx.user.id);
+      return itx.reply({
         ephemeral: true,
-        content: Utils.pad(`❌ You already have an open ticket: <#${existingTicket}>`)
+        content: `❌ You already have a ticket: <#${existingId}>`
       });
     }
 
-    let categoryId = CONFIG.ticketCategoryId;
-    if (!categoryId) {
-      const existingCategory = interaction.guild.channels.cache.find(
-        c => c.type === ChannelType.GuildCategory && 
-             c.name.toLowerCase().includes('ticket')
+    let catId = cfg.ticketCategory;
+    if (!catId) {
+      const cat = itx.guild.channels.cache.find(
+        c => c.type === ChannelType.GuildCategory && c.name.toLowerCase().includes('ticket')
       );
-
-      if (existingCategory) {
-        categoryId = existingCategory.id;
-      } else {
-        const newCategory = await interaction.guild.channels.create({
+      if (cat) catId = cat.id;
+      else {
+        const newCat = await itx.guild.channels.create({
           name: '🎟️ Tickets',
           type: ChannelType.GuildCategory
         });
-        categoryId = newCategory.id;
+        catId = newCat.id;
       }
     }
 
-    const ticketChannel = await interaction.guild.channels.create({
-      name: `ticket-${interaction.user.username}`.toLowerCase().slice(0, 100),
+    const ch = await itx.guild.channels.create({
+      name: `ticket-${itx.user.username}`.toLowerCase().slice(0, 100),
       type: ChannelType.GuildText,
-      parent: categoryId,
+      parent: catId,
       permissionOverwrites: [
+        { id: itx.guild.roles.everyone, deny: [PermissionFlagsBits.ViewChannel] },
         {
-          id: interaction.guild.roles.everyone,
-          deny: [PermissionFlagsBits.ViewChannel]
-        },
-        {
-          id: interaction.user.id,
+          id: itx.user.id,
           allow: [
             PermissionFlagsBits.ViewChannel,
             PermissionFlagsBits.SendMessages,
@@ -1259,8 +1606,8 @@ async function handleTicketCommand(interaction) {
             PermissionFlagsBits.AttachFiles
           ]
         },
-        ...(CONFIG.supportRoleId ? [{
-          id: CONFIG.supportRoleId,
+        ...(cfg.supportRole ? [{
+          id: cfg.supportRole,
           allow: [
             PermissionFlagsBits.ViewChannel,
             PermissionFlagsBits.SendMessages,
@@ -1270,175 +1617,179 @@ async function handleTicketCommand(interaction) {
       ]
     });
 
-    activeTickets.set(interaction.user.id, ticketChannel.id);
+    activeTickets.set(itx.user.id, ch.id);
 
-    const closeButton = new ActionRowBuilder().addComponents(
+    const closeBtn = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`ticket:close:${interaction.user.id}`)
+        .setCustomId(`ticket:close:${itx.user.id}`)
         .setLabel('Close Ticket')
         .setStyle(ButtonStyle.Danger)
         .setEmoji('🗑️')
     );
 
-    const ticketEmbed = Utils.embed({
-      title: '🎟️ Support Ticket',
-      description: `Welcome, <@${interaction.user.id}>!\n\nPlease describe your issue in detail. ${CONFIG.supportRoleId ? `<@&${CONFIG.supportRoleId}>` : 'A staff member'} will assist you shortly.`,
-      color: CONFIG.colors.success,
-      fields: [
-        { name: '📋 Ticket Info', value: `Opened: <t:${Utils.timestamp()}:R>\nOpener: ${interaction.user.tag}`, inline: false }
-      ]
+    await ch.send({
+      content: `<@${itx.user.id}>${cfg.supportRole ? ` <@&${cfg.supportRole}>` : ''}`,
+      embeds: [Utils.embed({
+        title: '🎟️ Support Ticket',
+        description: `Welcome, <@${itx.user.id}>!\n\nDescribe your issue. ${cfg.supportRole ? `<@&${cfg.supportRole}>` : 'Staff'} will help soon.`,
+        color: CONFIG.colors.success,
+        fields: [
+          { name: '📋 Info', value: `Opened: <t:${Utils.timestamp()}:R>\nOpener: ${itx.user.tag}`, inline: false }
+        ]
+      })],
+      components: [closeBtn]
     });
 
-    await ticketChannel.send({
-      content: `<@${interaction.user.id}>${CONFIG.supportRoleId ? ` <@&${CONFIG.supportRoleId}>` : ''}`,
-      embeds: [ticketEmbed],
-      components: [closeButton]
-    });
-
-    await interaction.reply({
-      ephemeral: true,
-      content: Utils.pad(`✅ Ticket created: ${ticketChannel}`)
-    });
-
-    Utils.sendLog(interaction.guild, Utils.embed({
+    await itx.reply({ ephemeral: true, content: `✅ Ticket created: ${ch}` });
+    Utils.sendLog(itx.guild, Utils.embed({
       title: '🎟️ Ticket Opened',
       color: CONFIG.colors.success,
       fields: [
-        { name: '👤 User', value: interaction.user.tag, inline: true },
-        { name: '📍 Channel', value: `${ticketChannel}`, inline: true },
-        { name: '🆔 Ticket ID', value: ticketChannel.id, inline: true }
+        { name: '👤 User', value: itx.user.tag, inline: true },
+        { name: '📍 Channel', value: `${ch}`, inline: true }
       ]
     }));
   }
 
-  if (subcommand === 'close') {
+  if (sub === 'close') {
     const isTicket = 
-      interaction.channel.parentId === CONFIG.ticketCategoryId ||
-      interaction.channel.parent?.name.toLowerCase().includes('ticket') ||
-      interaction.channel.name.startsWith('ticket-');
+      itx.channel.parentId === cfg.ticketCategory ||
+      itx.channel.parent?.name.toLowerCase().includes('ticket') ||
+      itx.channel.name.startsWith('ticket-');
 
     if (!isTicket) {
-      return interaction.reply({
-        ephemeral: true,
-        content: Utils.pad('❌ This command only works in ticket channels.')
-      });
+      return itx.reply({ ephemeral: true, content: '❌ Not a ticket channel!' });
     }
 
     const canClose = 
-      Utils.hasPermission(interaction.member, PermissionFlagsBits.ManageChannels) ||
-      (CONFIG.supportRoleId && interaction.member.roles.cache.has(CONFIG.supportRoleId));
+      Utils.isMod(itx.member) ||
+      (cfg.supportRole && itx.member.roles.cache.has(cfg.supportRole));
 
     if (!canClose) {
-      return interaction.reply({
-        ephemeral: true,
-        content: Utils.pad('❌ You do not have permission to close this ticket.')
-      });
+      return itx.reply({ ephemeral: true, content: '❌ No permission!' });
     }
 
-    await interaction.reply({
+    await itx.reply({
       embeds: [Utils.embed({
         title: '🗑️ Closing Ticket',
-        description: 'This ticket will be deleted in 5 seconds...',
+        description: 'Channel will be deleted in 5 seconds...',
         color: CONFIG.colors.warning
       })]
     });
 
-    for (const [userId, channelId] of activeTickets) {
-      if (channelId === interaction.channel.id) {
-        activeTickets.delete(userId);
-        break;
-      }
+    for (const [uid, cid] of activeTickets) {
+      if (cid === itx.channel.id) activeTickets.delete(uid);
     }
 
-    Utils.sendLog(interaction.guild, Utils.embed({
+    Utils.sendLog(itx.guild, Utils.embed({
       title: '🎟️ Ticket Closed',
       color: CONFIG.colors.error,
       fields: [
-        { name: '👤 Closed By', value: interaction.user.tag, inline: true },
-        { name: '📍 Channel', value: interaction.channel.name, inline: true },
-        { name: '🕒 Time', value: `<t:${Utils.timestamp()}:R>`, inline: true }
+        { name: '👤 By', value: itx.user.tag, inline: true },
+        { name: '📍 Channel', value: itx.channel.name, inline: true }
       ]
     }));
 
-    setTimeout(() => {
-      interaction.channel.delete().catch(console.error);
-    }, 5000);
+    setTimeout(() => itx.channel.delete().catch(() => {}), 5000);
   }
 }
 
-// ==================== COMMAND: /stats ====================
-async function handleStatsCommand(interaction) {
-  // Admin check
-  if (!Utils.hasPermission(interaction.member, PermissionFlagsBits.ManageGuild)) {
-    return interaction.reply({
-      ephemeral: true,
-      content: Utils.pad('❌ Only administrators can view bot statistics.')
-    });
+async function cmdVerify(itx) {
+  if (!Utils.hasPermission(itx.member, PermissionFlagsBits.ManageGuild)) {
+    return itx.reply({ ephemeral: true, content: '❌ Admin only!' });
   }
 
-  const uptime = process.uptime();
-  const hours = Math.floor(uptime / 3600);
-  const minutes = Math.floor((uptime % 3600) / 60);
-  const seconds = Math.floor(uptime % 60);
+  const role = itx.options.getRole('role', true);
+  const ch = itx.options.getChannel('channel') || itx.channel;
 
-  const memUsage = process.memoryUsage();
-  const memoryMB = (memUsage.heapUsed / 1024 / 1024).toFixed(2);
+  if (!ch.isTextBased()) {
+    return itx.reply({ ephemeral: true, content: '❌ Invalid channel!' });
+  }
 
-  const totalMembers = client.guilds.cache.reduce((acc, guild) => acc + guild.memberCount, 0);
-  const totalChannels = client.channels.cache.size;
+  const btn = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`verify:click:${role.id}`)
+      .setLabel('Verify')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('✅')
+  );
 
-  const embed = Utils.embed({
-    title: '📊 Xaver Statistics',
-    thumbnail: client.user.displayAvatarURL(),
-    fields: [
-      { name: '🏰 Servers', value: `${client.guilds.cache.size}`, inline: true },
-      { name: '👥 Total Members', value: `${totalMembers.toLocaleString()}`, inline: true },
-      { name: '📺 Channels', value: `${totalChannels}`, inline: true },
-      { name: '⏱️ Uptime', value: `${hours}h ${minutes}m ${seconds}s`, inline: true },
-      { name: '💾 Memory', value: `${memoryMB} MB`, inline: true },
-      { name: '🔢 Commands', value: `${slashCommands.length}`, inline: true },
-      { name: '📈 Tracked Users', value: `${userStats.size}`, inline: true },
-      { name: '🎟️ Active Tickets', value: `${activeTickets.size}`, inline: true },
-      { name: '🤖 Bot Version', value: 'v4.5', inline: true }
-    ],
-    footer: true
+  await ch.send({
+    embeds: [Utils.embed({
+      title: '✅ Server Verification',
+      description: `Welcome to **${itx.guild.name}**!\n\nClick the button below to verify and get access.\n\nYou will receive: ${role}`,
+      thumbnail: itx.guild.iconURL({ size: 256 }),
+      fields: [
+        { name: '📋 Instructions', value: '1. Read the rules\n2. Click Verify\n3. Enjoy!', inline: false }
+      ]
+    })],
+    components: [btn]
   });
 
-  await interaction.reply({ embeds: [embed] });
+  await itx.reply({ ephemeral: true, content: `✅ Verification setup in ${ch}!` });
+  Utils.sendLog(itx.guild, Utils.embed({
+    title: '✅ Verification System Setup',
+    color: CONFIG.colors.success,
+    fields: [
+      { name: '👤 By', value: itx.user.tag, inline: true },
+      { name: '📍 Channel', value: `${ch}`, inline: true },
+      { name: '🎭 Role', value: `${role}`, inline: true }
+    ]
+  }));
+}
+
+async function cmdStats(itx) {
+  const uptime = process.uptime();
+  const h = Math.floor(uptime / 3600);
+  const m = Math.floor((uptime % 3600) / 60);
+  const s = Math.floor(uptime % 60);
+
+  const mem = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
+  const totalMembers = client.guilds.cache.reduce((a, g) => a + g.memberCount, 0);
+
+  await itx.reply({
+    embeds: [Utils.embed({
+      title: '📊 Xaver v5.0 Stats',
+      thumbnail: client.user.displayAvatarURL(),
+      fields: [
+        { name: '🏰 Servers', value: `${client.guilds.cache.size}`, inline: true },
+        { name: '👥 Members', value: `${totalMembers.toLocaleString()}`, inline: true },
+        { name: '📺 Channels', value: `${client.channels.cache.size}`, inline: true },
+        { name: '⏱️ Uptime', value: `${h}h ${m}m ${s}s`, inline: true },
+        { name: '💾 Memory', value: `${mem} MB`, inline: true },
+        { name: '🔢 Commands', value: `${commands.length}`, inline: true },
+        { name: '📈 Users Tracked', value: `${userStats.size}`, inline: true },
+        { name: '🎟️ Active Tickets', value: `${activeTickets.size}`, inline: true },
+        { name: '⭐ Starboard Msgs', value: `${starboardCache.size}`, inline: true },
+        { name: '📊 Active Polls', value: `${activePolls.size}`, inline: true },
+        { name: '💤 AFK Users', value: `${afkUsers.size}`, inline: true },
+        { name: '🤖 Version', value: 'v5.0 MEGA', inline: true }
+      ]
+    })]
+  });
 }
 
 // ==================== ERROR HANDLING ====================
-process.on('unhandledRejection', (error) => {
-  console.error('❌ Unhandled Promise Rejection:', error);
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught Exception:', error);
-});
-
-client.on('error', (error) => {
-  console.error('❌ Discord Client Error:', error);
-});
-
-client.on('warn', (warning) => {
-  console.warn('⚠️ Discord Client Warning:', warning);
-});
+process.on('unhandledRejection', (e) => console.error('❌ Unhandled:', e));
+process.on('uncaughtException', (e) => console.error('❌ Uncaught:', e));
+client.on('error', (e) => console.error('❌ Client:', e));
+client.on('warn', (w) => console.warn('⚠️ Warning:', w));
 
 // ==================== GRACEFUL SHUTDOWN ====================
 process.on('SIGINT', async () => {
-  console.log('\n🛑 Shutting down gracefully...');
+  console.log('\n🛑 Shutting down...');
   await client.destroy();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  console.log('\n🛑 Shutting down gracefully...');
+  console.log('\n🛑 Shutting down...');
   await client.destroy();
   process.exit(0);
 });
 
 // ==================== LOGIN ====================
-client.login(CONFIG.token).catch((error) => {
-  console.error('❌ Failed to login:', error);
+client.login(CONFIG.token).catch((e) => {
+  console.error('❌ Login failed:', e);
   process.exit(1);
 });

@@ -1,0 +1,21 @@
+{
+  "warns": [],
+  "userStats": [],
+  "guildConfigs": [
+    [
+      "1435363051208441918",
+      {
+        "logChannel": null,
+        "welcomeChannel": null,
+        "verifyRole": null,
+        "supportRole": null,
+        "ticketCategory": null,
+        "starboardChannel": null,
+        "starboardEmoji": "⭐",
+        "starboardThreshold": 3,
+        "autoStrikeKick": 3,
+        "autoStrikeBan": 5
+      }
+    ]
+  ]
+}

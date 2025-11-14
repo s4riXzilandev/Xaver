@@ -1129,7 +1129,7 @@ async function cmdLeaderboard(itx) {
 
 async function cmdConfig(itx) {
   const sub = itx.options.getSubcommand();
-  const cfg = Utils.ensureGuildConfig(itx.guild.id);
+  const cfg = Utils.getConfig(itx.guild.id);
 
   if (sub === 'show') {
     const fields = [
@@ -1189,7 +1189,7 @@ async function cmdConfig(itx) {
 
 async function cmdAutoMod(itx) {
   const sub = itx.options.getSubcommand();
-  const cfg = Utils.ensureGuildConfig(itx.guild.id);
+  const cfg = Utils.getConfig(itx.guild.id);
 
   if (sub === 'toggle') {
     const feature = itx.options.getString('feature', true);
@@ -1477,7 +1477,7 @@ async function cmdPoll(itx) {
 
 async function cmdRoles(itx) {
   const sub = itx.options.getSubcommand();
-  const cfg = Utils.ensureGuildConfig(itx.guild.id);
+  const cfg = Utils.getConfig(itx.guild.id);
 
   if (sub === 'panel') {
     if (!Utils.hasPermission(itx.member, PermissionFlagsBits.ManageGuild)) {
@@ -1569,7 +1569,7 @@ async function cmdAnnounce(itx) {
 
 async function cmdTicket(itx) {
   const sub = itx.options.getSubcommand();
-  const cfg = Utils.ensureGuildConfig(itx.guild.id);
+  const cfg = Utils.getConfig(itx.guild.id);
 
   if (sub === 'create') {
     if (activeTickets.has(itx.user.id)) {

@@ -1477,25 +1477,32 @@ async function cmdPoll(itx) {
 
 async function cmdRoles(itx) {
   const sub = itx.options.getSubcommand();
-  const cfg = Utils.getConfig(itx.guild.id);
 
   if (sub === 'panel') {
     if (!Utils.hasPermission(itx.member, PermissionFlagsBits.ManageGuild)) {
       return itx.reply({ ephemeral: true, content: '❌ Admin only!' });
     }
 
-    const panelId = itx.options.getString('panel_id', true);
-    const description = itx.options.getString('description', true);
-    const ch = itx.options.getChannel('channel') || itx.channel;
+    const title = itx.options.getString('title', true);
+    const description = itx.options.getString('description') || 'Select your roles below!';
 
-    if (!ch.isTextBased()) {
-      return itx.reply({ ephemeral: true, content: '❌ Invalid channel!' });
-    }
+    const panelId = `panel-${Date.now()}`;
+    const panel = {
+      id: panelId,
+      title,
+      description,
+      roles: [],
+      messageId: null,
+      channelId: itx.channel.id,
+      guildId: itx.guild.id
+    };
 
-    const panel = { id: panelId, description, roles: [], messageId: null };
     reactionRolePanels.set(panelId, panel);
 
-    await itx.reply({ ephemeral: true, content: `✅ Panel \`${panelId}\` created! Use \`/roles add\` to add roles.` });
+    await itx.reply({ 
+      ephemeral: true, 
+      content: `✅ Panel created! Use \`/roles add\` to add roles to this panel.\nPanel ID: \`${panelId}\`` 
+    });
   }
 
   if (sub === 'add') {
@@ -1503,26 +1510,40 @@ async function cmdRoles(itx) {
       return itx.reply({ ephemeral: true, content: '❌ Admin only!' });
     }
 
-    const panelId = itx.options.getString('panel_id', true);
     const role = itx.options.getRole('role', true);
-    const emoji = itx.options.getString('emoji', true);
+    const emoji = itx.options.getString('emoji') || '✅';
+    const label = itx.options.getString('label') || role.name;
 
-    const panel = reactionRolePanels.get(panelId);
-    if (!panel) {
-      return itx.reply({ ephemeral: true, content: '❌ Panel not found!' });
+    const lastPanel = Array.from(reactionRolePanels.values())
+      .filter(p => p.guildId === itx.guild.id)
+      .sort((a, b) => {
+        const aNum = parseInt(a.id.split('-')[1]);
+        const bNum = parseInt(b.id.split('-')[1]);
+        return bNum - aNum;
+      })[0];
+
+    if (!lastPanel) {
+      return itx.reply({ ephemeral: true, content: '❌ No panel found! Create one first with `/roles panel`' });
     }
 
-    if (!panel.roles) panel.roles = [];
-    if (!panel.roles.includes(role.id)) {
-      panel.roles.push(role.id);
+    if (!lastPanel.roles) lastPanel.roles = [];
+    if (!lastPanel.emojis) lastPanel.emojis = {};
+    if (!lastPanel.labels) lastPanel.labels = {};
+
+    if (lastPanel.roles.includes(role.id)) {
+      return itx.reply({ ephemeral: true, content: '❌ Role already in panel!' });
     }
 
-    panel.emojis = panel.emojis || {};
-    panel.emojis[emoji] = role.id;
+    lastPanel.roles.push(role.id);
+    lastPanel.emojis[role.id] = emoji;
+    lastPanel.labels[role.id] = label;
 
-    reactionRolePanels.set(panelId, panel);
+    reactionRolePanels.set(lastPanel.id, lastPanel);
 
-    await itx.reply({ ephemeral: true, content: `✅ Added ${role} to panel \`${panelId}\` with emoji ${emoji}` });
+    await itx.reply({ 
+      ephemeral: true, 
+      content: `✅ Added ${role} to panel with ${emoji} ${label}` 
+    });
   }
 }
 

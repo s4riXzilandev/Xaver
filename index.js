@@ -1100,6 +1100,473 @@ async function cmdLevel(itx) {
   });
 }
 
+async function cmdLeaderboard(itx) {
+  const guild = itx.guild.id;
+  const allStats = Array.from(userStats.entries())
+    .filter(([key]) => key.startsWith(`${guild}:`))
+    .map(([key, stats]) => ({ ...stats, key }))
+    .sort((a, b) => b.level - a.level || b.xp - a.xp)
+    .slice(0, 10);
+
+  if (allStats.length === 0) {
+    return itx.reply({ ephemeral: true, content: '❌ No data yet!' });
+  }
+
+  const fields = allStats.map((s, i) => ({
+    name: `${i + 1}. ${s.username || 'Unknown'}`,
+    value: `Level ${s.level} • ${s.xp} XP • ${s.messages} msgs`,
+    inline: false
+  }));
+
+  await itx.reply({
+    embeds: [Utils.embed({
+      title: '🏆 Server Leaderboard',
+      description: 'Top 10 members by level and XP',
+      fields
+    })]
+  });
+}
+
+async function cmdConfig(itx) {
+  const sub = itx.options.getSubcommand();
+  const cfg = Utils.ensureGuildConfig(itx.guild.id);
+
+  if (sub === 'show') {
+    const fields = [
+      { name: '📝 Log Channel', value: cfg.logChannel ? `<#${cfg.logChannel}>` : 'Not set', inline: true },
+      { name: '👋 Welcome Channel', value: cfg.welcomeChannel ? `<#${cfg.welcomeChannel}>` : 'Not set', inline: true },
+      { name: '⭐ Starboard Channel', value: cfg.starboardChannel ? `<#${cfg.starboardChannel}>` : 'Not set', inline: true },
+      { name: '✅ Verify Role', value: cfg.verifyRole ? `<@&${cfg.verifyRole}>` : 'Not set', inline: true },
+      { name: '🎟️ Support Role', value: cfg.supportRole ? `<@&${cfg.supportRole}>` : 'Not set', inline: true },
+      { name: '📁 Ticket Category', value: cfg.ticketCategory ? `<#${cfg.ticketCategory}>` : 'Not set', inline: true },
+      { name: '⭐ Starboard Emoji', value: cfg.starboardEmoji || '⭐', inline: true },
+      { name: '🔢 Starboard Threshold', value: `${cfg.starboardThreshold}`, inline: true }
+    ];
+
+    return itx.reply({
+      ephemeral: true,
+      embeds: [Utils.embed({
+        title: '⚙️ Server Configuration',
+        fields
+      })]
+    });
+  }
+
+  if (sub === 'set') {
+    const key = itx.options.getString('key', true);
+    const value = itx.options.getString('value', true);
+
+    if (key === 'starboardEmoji') {
+      cfg[key] = value;
+    } else if (key === 'starboardThreshold') {
+      const num = parseInt(value);
+      if (isNaN(num) || num < 1) {
+        return itx.reply({ ephemeral: true, content: '❌ Invalid number!' });
+      }
+      cfg[key] = num;
+    } else {
+      const match = value.match(/\d+/);
+      if (!match) {
+        return itx.reply({ ephemeral: true, content: '❌ Invalid value! Please mention/ID the channel or role.' });
+      }
+      cfg[key] = match[0];
+    }
+
+    guildConfigs.set(itx.guild.id, cfg);
+    await itx.reply({ ephemeral: true, content: `✅ Updated \`${key}\` to \`${value}\`` });
+
+    Utils.sendLog(itx.guild, Utils.embed({
+      title: '⚙️ Config Updated',
+      color: CONFIG.colors.info,
+      fields: [
+        { name: '👤 By', value: itx.user.tag, inline: true },
+        { name: '🔑 Key', value: key, inline: true },
+        { name: '📝 Value', value: value, inline: true }
+      ]
+    }));
+  }
+}
+
+async function cmdAutoMod(itx) {
+  const sub = itx.options.getSubcommand();
+  const cfg = Utils.ensureGuildConfig(itx.guild.id);
+
+  if (sub === 'toggle') {
+    const feature = itx.options.getString('feature', true);
+    const enabled = itx.options.getBoolean('enabled', true);
+    
+    cfg[feature] = enabled;
+    guildConfigs.set(itx.guild.id, cfg);
+
+    const featureNames = {
+      autoModEnabled: 'AutoMod System',
+      antiSpam: 'Anti-Spam',
+      antiLinks: 'Anti-Links'
+    };
+
+    await itx.reply({ 
+      ephemeral: true, 
+      content: `✅ ${featureNames[feature]} ${enabled ? 'enabled' : 'disabled'}!` 
+    });
+
+    Utils.sendLog(itx.guild, Utils.embed({
+      title: '🛡️ AutoMod Toggle',
+      color: enabled ? CONFIG.colors.success : CONFIG.colors.warning,
+      fields: [
+        { name: '👤 By', value: itx.user.tag, inline: true },
+        { name: '🔧 Feature', value: featureNames[feature], inline: true },
+        { name: '📊 Status', value: enabled ? 'Enabled' : 'Disabled', inline: true }
+      ]
+    }));
+  }
+
+  if (sub === 'badwords') {
+    const action = itx.options.getString('action', true);
+    
+    if (action === 'list') {
+      const words = cfg.badWords || [];
+      if (words.length === 0) {
+        return itx.reply({ ephemeral: true, content: '📝 No bad words configured.' });
+      }
+      return itx.reply({ 
+        ephemeral: true, 
+        content: `📝 **Bad Words** (${words.length}):\n${words.map(w => `• \`${w}\``).join('\n')}` 
+      });
+    }
+
+    const word = itx.options.getString('word');
+    if (!word) {
+      return itx.reply({ ephemeral: true, content: '❌ Please provide a word!' });
+    }
+
+    const normalized = word.toLowerCase().trim();
+    cfg.badWords = cfg.badWords || [];
+
+    if (action === 'add') {
+      if (cfg.badWords.includes(normalized)) {
+        return itx.reply({ ephemeral: true, content: '❌ Word already in list!' });
+      }
+      cfg.badWords.push(normalized);
+      guildConfigs.set(itx.guild.id, cfg);
+      await itx.reply({ ephemeral: true, content: `✅ Added \`${normalized}\` to bad words filter!` });
+    }
+
+    if (action === 'remove') {
+      const before = cfg.badWords.length;
+      cfg.badWords = cfg.badWords.filter(w => w !== normalized);
+      if (cfg.badWords.length === before) {
+        return itx.reply({ ephemeral: true, content: '❌ Word not found in list!' });
+      }
+      guildConfigs.set(itx.guild.id, cfg);
+      await itx.reply({ ephemeral: true, content: `✅ Removed \`${normalized}\` from bad words filter!` });
+    }
+  }
+
+  if (sub === 'whitelist') {
+    const action = itx.options.getString('action', true);
+    
+    if (action === 'list') {
+      const domains = cfg.whitelistedLinks || [];
+      if (domains.length === 0) {
+        return itx.reply({ ephemeral: true, content: '📝 No whitelisted domains configured.' });
+      }
+      return itx.reply({ 
+        ephemeral: true, 
+        content: `📝 **Whitelisted Domains** (${domains.length}):\n${domains.map(d => `• \`${d}\``).join('\n')}` 
+      });
+    }
+
+    const domain = itx.options.getString('domain');
+    if (!domain) {
+      return itx.reply({ ephemeral: true, content: '❌ Please provide a domain!' });
+    }
+
+    const normalized = domain.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/^www\./, '');
+    cfg.whitelistedLinks = cfg.whitelistedLinks || [];
+
+    if (action === 'add') {
+      if (cfg.whitelistedLinks.includes(normalized)) {
+        return itx.reply({ ephemeral: true, content: '❌ Domain already whitelisted!' });
+      }
+      cfg.whitelistedLinks.push(normalized);
+      guildConfigs.set(itx.guild.id, cfg);
+      await itx.reply({ ephemeral: true, content: `✅ Added \`${normalized}\` to whitelist!` });
+    }
+
+    if (action === 'remove') {
+      const before = cfg.whitelistedLinks.length;
+      cfg.whitelistedLinks = cfg.whitelistedLinks.filter(d => d !== normalized);
+      if (cfg.whitelistedLinks.length === before) {
+        return itx.reply({ ephemeral: true, content: '❌ Domain not found in whitelist!' });
+      }
+      guildConfigs.set(itx.guild.id, cfg);
+      await itx.reply({ ephemeral: true, content: `✅ Removed \`${normalized}\` from whitelist!` });
+    }
+  }
+}
+
+async function cmdWarn(itx) {
+  if (!Utils.isMod(itx.member)) {
+    return itx.reply({ ephemeral: true, content: '❌ Moderator only!' });
+  }
+
+  const user = itx.options.getUser('user', true);
+  const reason = itx.options.getString('reason', true);
+  const member = await itx.guild.members.fetch(user.id).catch(() => null);
+
+  if (!member) {
+    return itx.reply({ ephemeral: true, content: '❌ User not in server!' });
+  }
+
+  const { warn, total } = WarnSystem.add(itx.guild.id, user.id, reason, itx.user.id, itx.user.tag);
+
+  await itx.reply({
+    embeds: [Utils.embed({
+      title: '⚠️ User Warned',
+      color: CONFIG.colors.warning,
+      fields: [
+        { name: '👤 User', value: `${user.tag}`, inline: true },
+        { name: '🔨 By', value: itx.user.tag, inline: true },
+        { name: '📊 Total Strikes', value: `${total}`, inline: true },
+        { name: '📝 Reason', value: reason, inline: false }
+      ]
+    })]
+  });
+
+  Utils.sendLog(itx.guild, Utils.embed({
+    title: '⚠️ Warning Issued',
+    color: CONFIG.colors.warning,
+    fields: [
+      { name: '👤 User', value: `${user.tag} (${user.id})`, inline: true },
+      { name: '🔨 Moderator', value: itx.user.tag, inline: true },
+      { name: '📊 Strikes', value: `${total}`, inline: true },
+      { name: '📝 Reason', value: reason, inline: false }
+    ]
+  }));
+
+  try {
+    await member.send({
+      embeds: [Utils.embed({
+        title: '⚠️ Warning',
+        description: `You have been warned in **${itx.guild.name}**`,
+        color: CONFIG.colors.warning,
+        fields: [
+          { name: '📝 Reason', value: reason, inline: false },
+          { name: '📊 Total Strikes', value: `${total}`, inline: false }
+        ]
+      })]
+    });
+  } catch (e) {
+    // User has DMs disabled
+  }
+}
+
+async function cmdStrikes(itx) {
+  const user = itx.options.getUser('user') || itx.user;
+  const strikes = WarnSystem.get(itx.guild.id, user.id);
+
+  if (strikes.length === 0) {
+    return itx.reply({ 
+      ephemeral: true, 
+      content: `✅ ${user.tag} has no strikes!` 
+    });
+  }
+
+  const fields = strikes.map((w, i) => ({
+    name: `Strike #${i + 1} - ${new Date(w.date).toLocaleDateString()}`,
+    value: `📝 ${w.reason}\n🔨 By: ${w.moderator}`,
+    inline: false
+  }));
+
+  await itx.reply({
+    ephemeral: true,
+    embeds: [Utils.embed({
+      title: `⚠️ Strikes for ${user.tag}`,
+      description: `Total: ${strikes.length}`,
+      color: CONFIG.colors.warning,
+      fields
+    })]
+  });
+}
+
+async function cmdPardon(itx) {
+  if (!Utils.isMod(itx.member)) {
+    return itx.reply({ ephemeral: true, content: '❌ Moderator only!' });
+  }
+
+  const user = itx.options.getUser('user', true);
+  const count = WarnSystem.clear(itx.guild.id, user.id);
+
+  if (count === 0) {
+    return itx.reply({ ephemeral: true, content: `${user.tag} has no strikes!` });
+  }
+
+  await itx.reply({
+    embeds: [Utils.embed({
+      title: '✅ Strikes Cleared',
+      color: CONFIG.colors.success,
+      fields: [
+        { name: '👤 User', value: user.tag, inline: true },
+        { name: '🔨 By', value: itx.user.tag, inline: true },
+        { name: '📊 Cleared', value: `${count}`, inline: true }
+      ]
+    })]
+  });
+
+  Utils.sendLog(itx.guild, Utils.embed({
+    title: '✅ Strikes Pardoned',
+    color: CONFIG.colors.success,
+    fields: [
+      { name: '👤 User', value: `${user.tag} (${user.id})`, inline: true },
+      { name: '🔨 By', value: itx.user.tag, inline: true },
+      { name: '📊 Strikes Cleared', value: `${count}`, inline: true }
+    ]
+  }));
+}
+
+async function cmdAFK(itx) {
+  const reason = itx.options.getString('reason') || 'AFK';
+  const key = Utils.userKey(itx.guild.id, itx.user.id);
+  
+  afkUsers.set(key, { reason, since: Date.now() });
+  
+  await itx.reply({ 
+    ephemeral: true, 
+    content: `💤 You are now AFK: ${reason}` 
+  });
+}
+
+async function cmdPoll(itx) {
+  const question = itx.options.getString('question', true);
+  const options = [
+    itx.options.getString('option1', true),
+    itx.options.getString('option2', true),
+    itx.options.getString('option3'),
+    itx.options.getString('option4')
+  ].filter(Boolean);
+
+  const emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
+  const fields = options.map((opt, i) => ({
+    name: `${emojis[i]} Option ${i + 1}`,
+    value: opt,
+    inline: false
+  }));
+
+  const msg = await itx.channel.send({
+    embeds: [Utils.embed({
+      title: '📊 Poll',
+      description: question,
+      fields,
+      footer: { text: `Asked by ${itx.user.tag}` }
+    })]
+  });
+
+  for (let i = 0; i < options.length; i++) {
+    await msg.react(emojis[i]);
+  }
+
+  activePolls.set(msg.id, {
+    question,
+    options,
+    author: itx.user.id,
+    channel: itx.channel.id
+  });
+
+  await itx.reply({ ephemeral: true, content: '✅ Poll created!' });
+}
+
+async function cmdRoles(itx) {
+  const sub = itx.options.getSubcommand();
+  const cfg = Utils.ensureGuildConfig(itx.guild.id);
+
+  if (sub === 'panel') {
+    if (!Utils.hasPermission(itx.member, PermissionFlagsBits.ManageGuild)) {
+      return itx.reply({ ephemeral: true, content: '❌ Admin only!' });
+    }
+
+    const panelId = itx.options.getString('panel_id', true);
+    const description = itx.options.getString('description', true);
+    const ch = itx.options.getChannel('channel') || itx.channel;
+
+    if (!ch.isTextBased()) {
+      return itx.reply({ ephemeral: true, content: '❌ Invalid channel!' });
+    }
+
+    const panel = { id: panelId, description, roles: [], messageId: null };
+    reactionRolePanels.set(panelId, panel);
+
+    await itx.reply({ ephemeral: true, content: `✅ Panel \`${panelId}\` created! Use \`/roles add\` to add roles.` });
+  }
+
+  if (sub === 'add') {
+    if (!Utils.hasPermission(itx.member, PermissionFlagsBits.ManageGuild)) {
+      return itx.reply({ ephemeral: true, content: '❌ Admin only!' });
+    }
+
+    const panelId = itx.options.getString('panel_id', true);
+    const role = itx.options.getRole('role', true);
+    const emoji = itx.options.getString('emoji', true);
+
+    const panel = reactionRolePanels.get(panelId);
+    if (!panel) {
+      return itx.reply({ ephemeral: true, content: '❌ Panel not found!' });
+    }
+
+    if (!panel.roles) panel.roles = [];
+    if (!panel.roles.includes(role.id)) {
+      panel.roles.push(role.id);
+    }
+
+    panel.emojis = panel.emojis || {};
+    panel.emojis[emoji] = role.id;
+
+    reactionRolePanels.set(panelId, panel);
+
+    await itx.reply({ ephemeral: true, content: `✅ Added ${role} to panel \`${panelId}\` with emoji ${emoji}` });
+  }
+}
+
+async function cmdSay(itx) {
+  if (!Utils.isMod(itx.member)) {
+    return itx.reply({ ephemeral: true, content: '❌ Moderator only!' });
+  }
+
+  const message = itx.options.getString('message', true);
+  const ch = itx.options.getChannel('channel') || itx.channel;
+
+  if (!ch.isTextBased()) {
+    return itx.reply({ ephemeral: true, content: '❌ Invalid channel!' });
+  }
+
+  await ch.send(message);
+  await itx.reply({ ephemeral: true, content: `✅ Message sent to ${ch}!` });
+}
+
+async function cmdAnnounce(itx) {
+  if (!Utils.hasPermission(itx.member, PermissionFlagsBits.ManageGuild)) {
+    return itx.reply({ ephemeral: true, content: '❌ Admin only!' });
+  }
+
+  const title = itx.options.getString('title', true);
+  const message = itx.options.getString('message', true);
+  const ch = itx.options.getChannel('channel') || itx.channel;
+
+  if (!ch.isTextBased()) {
+    return itx.reply({ ephemeral: true, content: '❌ Invalid channel!' });
+  }
+
+  await ch.send({
+    embeds: [Utils.embed({
+      title: `📣 ${title}`,
+      description: message,
+      color: CONFIG.colors.info,
+      footer: { text: `Announced by ${itx.user.tag}` }
+    })]
+  });
+
+  await itx.reply({ ephemeral: true, content: `✅ Announcement sent to ${ch}!` });
+}
+
 async function cmdTicket(itx) {
   const sub = itx.options.getSubcommand();
   const cfg = Utils.ensureGuildConfig(itx.guild.id);
